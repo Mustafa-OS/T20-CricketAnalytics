@@ -1088,8 +1088,14 @@ function hBar(elId, names, values, opts = {}) {
     xTitle = '', height = 440, color = PAL.amber,
     colorArr = null, hovertemplate = null,
   } = opts;
-  const order = names.map((n, i) => [n, values[i], colorArr ? colorArr[i] : null])
-                     .sort((a, b) => a[1] - b[1]);
+  // Guard: duplicate y-labels get stacked by Plotly — dedupe with suffixes.
+  const seen = {};
+  const uniqNames = names.map(n => {
+    if (seen[n] === undefined) { seen[n] = 0; return n; }
+    seen[n] += 1; return `${n} (${seen[n] + 1})`;
+  });
+  const order = uniqNames.map((n, i) => [n, values[i], colorArr ? colorArr[i] : null])
+                         .sort((a, b) => a[1] - b[1]);
   Plotly.newPlot(elId, [{
     type: 'bar', orientation: 'h',
     x: order.map(p => p[1]),
@@ -1474,10 +1480,14 @@ async function loadRecords() {
     apiGet('dismissals'),
   ]);
 
-  hBar('c-rec-scores', scores.map(s => s.batter), scores.map(s => s.runs),
-       { xTitle: 'Runs', color: PAL.amber,
-         hovertemplate: scores.map(s => `<b>${s.batter}</b><br>${s.runs} vs <i>${s.batting_team}</i><br>${s.date}<extra></extra>`),
-         height: 440 });
+  // Each innings is its own bar — label must be unique (batter + date)
+  // to prevent Plotly from stacking duplicate y-labels.
+  const scoreLabels = scores.map(s => {
+    const yr = (s.date || '').slice(0, 4);
+    return `${s.batter} · ${yr}`;
+  });
+  hBar('c-rec-scores', scoreLabels, scores.map(s => s.runs),
+       { xTitle: 'Runs', color: PAL.amber, height: 440 });
 
   hBar('c-rec-cent', cent.map(c => c.batter), cent.map(c => c.centuries),
        { xTitle: 'Centuries', color: PAL.violet, height: 440 });
