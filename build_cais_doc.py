@@ -159,8 +159,18 @@ r.font.color.rgb = SLATE
 
 sub2 = doc.add_paragraph()
 sub2.alignment = WD_ALIGN_PARAGRAPH.CENTER
-r = sub2.add_run('Full Mathematical Specification & Logic')
+r = sub2.add_run('Full Mathematical Specification & Logic  ·  v2')
 r.font.size = Pt(12); r.font.italic = True
+r.font.color.rgb = MUTED
+
+ver = doc.add_paragraph()
+ver.alignment = WD_ALIGN_PARAGRAPH.CENTER
+r = ver.add_run(
+    'v2 adds chase-pressure (2nd-innings RRR), flipped batting-phase weights '
+    '(powerplay easiest, death hardest), partnership-broken multiplier, '
+    'and early-wicket bonus.'
+)
+r.font.size = Pt(10); r.font.italic = True
 r.font.color.rgb = MUTED
 
 doc.add_paragraph()
@@ -172,10 +182,12 @@ doc.add_heading('1.  Overview', level=1)
 add_para(
     "CAIS is a per-delivery weighted metric computed over ball-by-ball T20 data. "
     "Each legal delivery contributes a score that depends not only on its raw outcome "
-    "(runs scored, wicket taken, runs conceded) but on five measurable context signals: "
+    "(runs scored, wicket taken, runs conceded) but on up to SEVEN measurable context signals: "
     "the phase of the innings, the bowler's role (pace or spin), the quality of the batter "
-    "on strike, the batter's recent form, and the in-match pressure state. Batting CAIS and "
-    "Bowling CAIS are reported separately."
+    "on strike, the batter's recent form, the in-match pressure state (itself a combination "
+    "of wicket-loss pressure and 2nd-innings chase pressure), the size of the partnership "
+    "that just got broken (for wickets), and whether the wicket is an early breakthrough. "
+    "Batting CAIS and Bowling CAIS are reported separately."
 )
 
 add_para(
@@ -205,9 +217,9 @@ add_bullet(None, rich=[('bᵢ, Bᵢ', {'mono': True}), (' — batter on strike a
 doc.add_heading('3.  Phase Classification', level=1)
 add_para(
     "Every ball is bucketed into one of three innings phases by over number. The phase "
-    "determines two separate multipliers: one applied to runs scored (batting view) and one "
-    "applied to runs conceded (bowling view). They're numerically equal in the current "
-    "calibration but kept conceptually distinct so they can be tuned independently."
+    "produces two separate multipliers: one applied to runs scored by a batter (phase_bat), "
+    "and one applied to runs conceded by a bowler (phase_bowl). They are not symmetric — "
+    "the batting gradient is now inverted from v1 to reflect real T20 difficulty."
 )
 add_formula("phase(o) = powerplay   if  o ≤ 6\n"
             "         = death       if  o ≥ 16\n"
@@ -215,16 +227,26 @@ add_formula("phase(o) = powerplay   if  o ≤ 6\n"
 add_table(
     headers=['Phase', 'Overs', 'phase_bat', 'phase_bowl'],
     rows=[
-        ['Powerplay', '1–6',  '1.2', '1.2'],
-        ['Middle',    '7–15', '1.0', '1.0'],
-        ['Death',     '16–20','1.3', '1.3'],
+        ['Powerplay', '1–6',  '0.95', '1.20'],
+        ['Middle',    '7–15', '1.15', '1.00'],
+        ['Death',     '16–20','1.35', '1.30'],
     ],
     col_widths=[4, 3, 4, 4]
 )
 add_para(
-    "Rationale: scoring is genuinely harder in the powerplay (bowlers attack, fielders up) "
-    "and at the death (yorkers, slower balls). The middle is the scoring-friendly neutral "
-    "baseline, so it gets a weight of 1.0."
+    "Rationale — batting (updated in v2): scoring in the powerplay is typically the easiest "
+    "phase of a T20 innings. Only two fielders are allowed outside the 30-yard circle, the "
+    "ball is hardest and travels fastest off the bat, and most bowlers still err on the side "
+    "of containment with the new ball. A run in the powerplay therefore gets a sub-unit "
+    "weight (0.95). Middle overs are harder (spinners, deeper fields, accumulation), so they "
+    "get 1.15. Death-overs runs are the hardest — yorkers, slower balls, full spread field, "
+    "death specialists bowling to plans — hence the premium at 1.35.", italic=False
+)
+add_para(
+    "Rationale — bowling: the bowling weights are asymmetric from batting. They price the "
+    "COST of runs conceded, so a death-over boundary hurts more (1.3), a middle-overs single "
+    "is neutral (1.0), and a powerplay boundary costs more than middle because the opposition "
+    "is expected to score there (1.2). This keeps the bowler's cost curve aligned with match impact.", italic=False
 )
 
 # ═══════════════════════════════════════════════════════════════
@@ -355,50 +377,99 @@ add_para("Per-ball — the bowler who dismisses an in-form Babar Azam on that pa
 # ═══════════════════════════════════════════════════════════════
 doc.add_heading('7.  Pressure Index (Detailed)', level=1)
 add_para(
-    "Pressure captures the in-match state at the exact moment of the delivery. Intuitively: "
-    "a run scored with 6 wickets down in the 14th over should be worth more than the same "
-    "run scored with 1 wicket down in the 3rd. Conversely, a wicket that sends a batting side "
-    "deeper into a collapse is a bigger blow. The pressure index is a single value in "
-    "[1.00, 1.30] attached to every legal delivery and used in both batting and bowling CAIS."
+    "Pressure captures the in-match state at the exact moment of the delivery. v2 "
+    "decomposes pressure into TWO independent components that are then combined: "
+    "(A) wicket-loss pressure — the collapse-in-progress signal, applicable in both "
+    "innings; and (B) chase pressure — the required-run-rate signal in the second "
+    "innings only. Each is in [1.00, 1.30]; they multiply together and are then "
+    "clipped to a final range of [1.00, 1.50]."
 )
+add_formula("pressure(i) = clip( wicket_pressure(i) · chase_pressure(i),  1.00,  1.50 )")
 
-doc.add_heading('7.1  Step 1 — Cumulative wickets per innings', level=2)
+# ── 7A. Wicket-loss pressure
+doc.add_heading('7A.  Wicket-loss Pressure', level=2)
 add_para("Deliveries are ordered by (match_id, inning, over, ball). Within each match-inning, cumulative wickets are tracked:")
 add_formula("cum_wkts(i) = Σ  w_j    for every delivery j in the same match-inning at or before i\n"
             "              j≤i")
-add_para("So on the first ball of an innings this is 0; after the first dismissal it becomes 1; and so on. By the 20th over it typically sits between 4 and 9.")
-
-doc.add_heading('7.2  Step 2 — Raw pressure signal', level=2)
-add_para("The raw signal combines the two things that make a situation tense — wickets already lost and how late in the innings we are:")
+add_para("A raw signal combines wickets already lost with how late in the innings we are:")
 add_formula("raw(i) = clip( cum_wkts(i) / max(oᵢ, 1) · 2,  lower = 0,  upper = 3 )")
-add_para("Dividing by the over number penalises early wickets less — losing 2 wickets in the 1st over is rare but shouldn't blow up the multiplier. Multiplying by 2 re-scales the number so common situations span most of the pre-clip range. Hard-clipping at 3 prevents pathological cases (all out cheaply in 3 overs) from dominating.")
-
-doc.add_heading('7.3  Step 3 — Mapping to a [1.00, 1.30] multiplier', level=2)
-add_formula("pressure(i) = clip( 1 + 0.1 · raw(i),  lower = 1.00,  upper = 1.30 )")
+add_para("Dividing by the over number softens early wickets. Hard-clipping at 3 prevents pathological states (e.g. 7/3 in the 2nd over) from dominating. The raw signal is then mapped:")
+add_formula("wicket_pressure(i) = clip( 1 + 0.1 · raw(i),  lower = 1.00,  upper = 1.30 )")
 
 add_para("Worked examples:", bold=True)
 add_table(
-    headers=['Match state', 'cum_wkts', 'over', 'raw', 'pressure'],
+    headers=['Match state', 'cum_wkts', 'over', 'raw', 'wicket_pressure'],
     rows=[
         ['Fresh start, ball 1',            '0', '1',  '0.00', '1.00'],
         ['1 down, over 5',                 '1', '5',  '0.40', '1.04'],
         ['3 down, over 10 (middle wobble)','3', '10', '0.60', '1.06'],
-        ['4 down, over 14',                '4', '14', '0.57', '1.06'],
         ['6 down, over 14 (collapse)',     '6', '14', '0.86', '1.09'],
         ['7 down, over 11 (heavy collapse)','7','11', '1.27', '1.13'],
         ['8 down, over 8 (extreme)',       '8', '8',  '2.00', '1.20'],
         ['9 down, over 6 (pathological)',  '9', '6',  '3.00', '1.30'],
     ],
-    col_widths=[6.5, 2.5, 2.0, 2.0, 2.5]
+    col_widths=[6.5, 2.5, 2.0, 2.0, 3.2]
 )
 
-add_para("Design notes:", bold=True)
-add_bullet('The ceiling of 1.30 (vs form\'s 1.45) reflects the relative importance: form is a batter-level signal with larger spread; pressure is a ball-level nudge and shouldn\'t dominate.')
-add_bullet('Floor of 1.00 is symmetric with form — we never penalise a delivery for being under low pressure, only reward it for being under high pressure.')
-add_bullet('Pressure is computed purely from the batting side\'s perspective (wickets lost). Chasing targets and run-rate pressure are not currently incorporated; this is a deliberate simplification and a future extension point.')
+# ── 7B. Chase pressure (NEW)
+doc.add_heading('7B.  Chase Pressure (2nd-innings only)', level=2)
+add_para(
+    "Batting second in T20 is a fundamentally different cognitive task: you know the exact target, the scoreboard counts down, and a rising required run rate compresses decision-making. v2 quantifies this via the required run rate at the instant each delivery is bowled."
+)
+add_para("Step 1 — First-innings target.", bold=True)
+add_formula("target(m) = Σ  total_runs(i)    for every ball i in inning 1 of match m    +  1\n"
+            "            i∈L¹_m")
+add_para("Step 2 — Running state at delivery i in inning 2.", bold=True)
+add_formula("runs_scored_so_far(i) = cumsum of total_runs in inning 2 of match m up to — but not including — ball i\n"
+            "runs_needed(i)        = max( target(m) − runs_scored_so_far(i),  0 )\n"
+            "balls_bowled(i)       = (oᵢ − 1) · 6 + ballᵢ\n"
+            "balls_remaining(i)    = max( 120 − (balls_bowled(i) − 1),  1 )\n"
+            "required_rr(i)        = runs_needed(i) / (balls_remaining(i) / 6)")
+add_para("Step 3 — Map required RR to multiplier.", bold=True)
+add_formula("chase_pressure(i) = clip( 1 + (required_rr(i) − 8.0) · 0.04,  lower = 1.00,  upper = 1.30 )")
 
-doc.add_heading('7.4  Applied in both CAIS flavours', level=2)
-add_para("For batting, pressure multiplies runs: a boundary during a collapse is worth more. For bowling, pressure multiplies wicket value: dismissing a batter when pressure is already high is a bigger blow, but — importantly — pressure does NOT scale run cost. Bleeding runs under pressure isn't doubly punished.")
+add_para("Concrete values:", bold=True)
+add_table(
+    headers=['Situation', 'required_rr', 'chase_pressure'],
+    rows=[
+        ['Coasting home (easy chase)',     '5.0',  '1.00'],
+        ['Comfortable',                     '8.0',  '1.00'],
+        ['Slightly tough',                  '10.0', '1.08'],
+        ['Hard',                            '12.0', '1.16'],
+        ['Very hard',                       '14.0', '1.24'],
+        ['Near-impossible',                 '16.0', '1.30'],
+    ],
+    col_widths=[7, 4, 4]
+)
+
+add_para("Design choices for chase_pressure:", bold=True)
+add_bullet('Neutral point at RRR = 8.0 — this is roughly the "par" T20 scoring rate in PSL, above which the chase starts to feel tight.')
+add_bullet('Linear slope of 0.04 per extra run of RRR: each +2.5 RRR adds roughly +0.1 to the multiplier.')
+add_bullet('Cap at 1.30 and floor at 1.00 keep the chase factor bounded and symmetric with the wicket-loss factor.')
+add_bullet('For 1st innings and match-context rows where chase is not applicable, chase_pressure = 1.0 (neutral).')
+add_bullet('Balls-remaining clipped to ≥ 1 to avoid divide-by-zero at innings end.')
+
+# ── 7C combined
+doc.add_heading('7C.  Combined Pressure', level=2)
+add_formula("pressure(i) = clip( wicket_pressure(i) · chase_pressure(i),  1.00,  1.50 )")
+add_para("Multiplying compounds both effects — a chase in disarray (lots of wickets down AND a climbing RRR) produces the highest values. The 1.50 cap limits total pressure to at most a 50% context uplift per ball, which is tight enough to stay believable but wide enough to meaningfully separate heroic moments.")
+
+add_para("Combined examples:", bold=True)
+add_table(
+    headers=['Situation', 'wicket_pressure', 'chase_pressure', 'combined'],
+    rows=[
+        ['1st innings, settled batting', '1.00', '1.00', '1.00'],
+        ['Middle wobble, 1st inns',      '1.09', '1.00', '1.09'],
+        ['Comfortable chase',            '1.04', '1.00', '1.04'],
+        ['Hard chase, wickets intact',   '1.04', '1.16', '1.21'],
+        ['Hard chase + collapse',        '1.15', '1.20', '1.38'],
+        ['Extreme (all factors high)',   '1.25', '1.28', '1.50'],
+    ],
+    col_widths=[6, 3.5, 3.5, 3]
+)
+
+doc.add_heading('7D.  Applied in both CAIS flavours', level=2)
+add_para("For batting, pressure multiplies runs: a boundary during a hard chase-collapse is worth more. For bowling, pressure multiplies wicket value, but does NOT scale run cost — bleeding runs under pressure isn't doubly punished.")
 
 # ═══════════════════════════════════════════════════════════════
 #   8. PHASE × ROLE MATRIX
@@ -434,6 +505,77 @@ add_bullet(None, rich=[('Spin / Death = 1.2×.', {'bold': True}),
                        (' Least weight — spinners at the death are often being milked, so wickets are partly the batters giving it away.', {})])
 
 # ═══════════════════════════════════════════════════════════════
+#   8.5  PARTNERSHIP-BROKEN MULTIPLIER  (v2)
+# ═══════════════════════════════════════════════════════════════
+doc.add_heading('8.5  Partnership-Broken Multiplier', level=1)
+add_para(
+    "v2 adds a multiplicative bonus on every WICKET ball according to the size of the "
+    "partnership that was just broken. A bowler who dismisses a batter after a 70-run stand "
+    "has just erased more match equity than one who nicks off a new batter immediately."
+)
+
+doc.add_heading('8.5.1  Tracking partnership size', level=2)
+add_para("Within each (match_id, inning) group, we compute the id of the currently-live partnership at the moment BEFORE each ball:")
+add_formula("partnership_key(i) = (cumulative wickets in innings up to and including balls j<i)\n"
+            "                   = cumsum(w) .shift(1) .fillna(0)    within (match_id, inning)")
+add_para("On a wicket ball itself, this key equals the id of the partnership that will be broken by that same ball. Grouping by this key and cumulative-summing total_runs (then subtracting the current ball's runs) yields the size of the partnership as it stood immediately before the delivery:")
+add_formula("partnership_runs(i) = Σ  total_runs(j)    minus    total_runs(i)\n"
+            "                     j in same partnership_key, j ≤ i")
+
+doc.add_heading('8.5.2  Mapping to a multiplier', level=2)
+add_formula("partnership_mult(i) = clip( 1 + (partnership_runs(i) − 20) · 0.012,  1.00,  1.60 )")
+add_table(
+    headers=['Partnership size (runs)', 'Raw 1 + (x − 20)·0.012', 'After clip'],
+    rows=[
+        ['10 (just started)',      '0.88', '1.00'],
+        ['20 (neutral point)',     '1.00', '1.00'],
+        ['30',                     '1.12', '1.12'],
+        ['50 (meaningful)',        '1.36', '1.36'],
+        ['70 (big stand)',         '1.60', '1.60'],
+        ['100 (massive)',          '1.96', '1.60'],
+    ],
+    col_widths=[5.5, 4.5, 4]
+)
+add_para("Design notes:", bold=True)
+add_bullet('Neutral point at 20 runs — below this, the partnership is still being built and the wicket isn\'t particularly "crucial". The multiplier stays at 1.0.')
+add_bullet('Linear slope of 0.012 per extra run — each 10 runs in the partnership adds 0.12 to the multiplier. A 50-run stand → 1.36×.')
+add_bullet('Ceiling of 1.60 keeps the bonus bounded even for century partnerships, to stop one freak event from swinging the leaderboard.')
+add_bullet('The multiplier is applied to wicket_value, so it has no effect on balls where no wicket fell.')
+
+# ═══════════════════════════════════════════════════════════════
+#   8.6  EARLY-WICKET MULTIPLIER  (v2)
+# ═══════════════════════════════════════════════════════════════
+doc.add_heading('8.6  Early-Wicket Multiplier', level=1)
+add_para(
+    "A bowler who dismisses an opener in the first over of a T20 innings has created "
+    "outsized value — they expose a new batter to a fresh ball immediately, disrupt the "
+    "opposition's batting plan, and shift win probability by several points. v2 encodes "
+    "this with a small dedicated multiplier."
+)
+doc.add_heading('8.6.1  Definition', level=2)
+add_para("This multiplier applies ONLY to the FIRST wicket of an innings (identified via partnership_key == 0 on the wicket ball itself), and only if it falls early:")
+add_table(
+    headers=['Condition', 'balls_in_innings', 'early_wicket_mult'],
+    rows=[
+        ['First wicket in the first over',    '1–6',    '1.35'],
+        ['First wicket in overs 2–3',         '7–18',   '1.15'],
+        ['Any other wicket',                  'n/a',    '1.00'],
+    ],
+    col_widths=[6.5, 3.5, 3.5]
+)
+add_para("balls_in_innings is the 1-indexed ball counter within the innings, computed as (over − 1) · 6 + ball.")
+
+doc.add_heading('8.6.2  Interaction with other factors', level=2)
+add_para(
+    "The early-wicket multiplier stacks with partnership_mult, phase×role, batter tier, "
+    "form, and pressure. Because the partnership size at the moment of a very early wicket "
+    "is tiny (<10 runs), partnership_mult will itself be 1.0 on such balls — so the early "
+    "multiplier is what meaningfully rewards them. Conversely, a dismissal that is both the "
+    "first wicket AND breaks a long opening stand (e.g. 50 runs in 5 overs) lights up "
+    "multiple bonuses simultaneously, which is correct behaviour."
+)
+
+# ═══════════════════════════════════════════════════════════════
 #   9. BATTING CAIS FORMULA
 # ═══════════════════════════════════════════════════════════════
 doc.add_heading('9.  Batting CAIS — Full Formula', level=1)
@@ -458,12 +600,27 @@ add_para("Qualification: min_balls = 50 by default (20 for season-specific leade
 doc.add_heading('10.  Bowling CAIS — Full Formula', level=1)
 add_para("For a bowler B with legal deliveries L_B they have bowled, we first define a per-ball score.")
 
-doc.add_heading('10.1  Per-ball wicket value', level=2)
+doc.add_heading('10.1  Per-ball wicket value (v2 — seven factors)', level=2)
 add_formula("wicket_value(i) = 30 · phase_role[role(B), phase(oᵢ)]\n"
             "                    · batter_tier(bᵢ)\n"
             "                    · form_mult(bᵢ, mᵢ)\n"
-            "                    · pressure(i)")
-add_para("This value is 0 unless wᵢ = 1 (a wicket fell). The base of 30 calibrates one wicket to roughly one-quarter of a top-phase, elite-batter innings.")
+            "                    · pressure(i)             ← now combined wicket×chase\n"
+            "                    · partnership_mult(i)      ← new in v2\n"
+            "                    · early_wicket_mult(i)     ← new in v2")
+add_para("This value is 0 unless wᵢ = 1 (a wicket fell). The base of 30 calibrates one wicket to roughly one-quarter of a top-phase, elite-batter innings. The seven multiplicative factors each sit in a bounded range, so the final wicket_value is bounded too:")
+add_table(
+    headers=['Factor', 'Range'],
+    rows=[
+        ['phase_role',         '1.20 – 2.00'],
+        ['batter_tier',        '0.75 – 1.50'],
+        ['form_mult',          '1.00 – 1.45'],
+        ['pressure (combined)','1.00 – 1.50'],
+        ['partnership_mult',   '1.00 – 1.60'],
+        ['early_wicket_mult',  '1.00 – 1.35'],
+    ],
+    col_widths=[6, 4]
+)
+add_para("Theoretical maximum wicket_value ≈ 30 · 2.00 · 1.50 · 1.45 · 1.50 · 1.60 · 1.35 ≈ 423 — a unicorn ball (pace, powerplay, elite in-form batter dismissed during a big chase collapse after a long partnership, as the first wicket of the innings). Theoretical minimum for a wicket ball ≈ 30 · 1.20 · 0.75 · 1.00 · 1.00 · 1.00 · 1.00 = 27.")
 
 doc.add_heading('10.2  Per-ball run cost', level=2)
 add_formula("run_cost(i) = Rᵢ · phase_bowl(oᵢ) · 0.5")
@@ -481,23 +638,54 @@ add_para("Qualification: min_balls = 30 by default (12 for season-specific leade
 # ═══════════════════════════════════════════════════════════════
 #   11. WORKED EXAMPLE
 # ═══════════════════════════════════════════════════════════════
-doc.add_heading('11.  Worked Example — a single wicket ball', level=1)
-add_para("Scenario: a fast bowler (pace) dismisses an elite batter in the 4th over of a game where the batting side is 1-down. The elite batter is in great form — rolling 3-innings average of 70 runs vs a league mean of 35 (ratio = 2.0).")
+doc.add_heading('11.  Worked Examples — single wicket balls', level=1)
+
+doc.add_heading('11.1  Huge-impact wicket', level=2)
+add_para("Scenario: a pace bowler dismisses an elite in-form opener (partnership so far: 52 runs) in the 3rd over of a 2nd-innings chase where the RRR has already climbed to 12.0 because of a scratchy start.")
 add_table(
-    headers=['Factor', 'Lookup', 'Value'],
+    headers=['Factor', 'Derivation', 'Value'],
     rows=[
-        ['Base',               'constant',                     '30'],
-        ['phase × role',       'pace × powerplay',             '2.0'],
-        ['batter_tier',        'top-quartile composite score', '1.5'],
-        ['form_mult',          'ratio 2.0 → clipped at 1.45',  '1.45'],
-        ['pressure',           '1 wkt / 4 over · 2 = 0.5 → 1 + 0.05', '1.05'],
+        ['Base',                    'constant',                                              '30'],
+        ['phase × role',            'pace × powerplay',                                      '2.00'],
+        ['batter_tier',             'top quartile',                                          '1.50'],
+        ['form_mult',               'rolling avg 70 vs league mean 35, ratio 2.0 → cap',    '1.45'],
+        ['wicket_pressure',         '1 wkt / 3 over · 2 = 0.67 → 1 + 0.07',                  '1.07'],
+        ['chase_pressure',          'RRR 12 → 1 + (12−8)·0.04',                              '1.16'],
+        ['pressure (combined)',     '1.07 · 1.16',                                           '1.24'],
+        ['partnership_mult',        '52 runs → 1 + (52−20)·0.012',                           '1.38'],
+        ['early_wicket_mult',       'first wicket, balls_in_innings ≤ 18',                   '1.15'],
     ],
-    col_widths=[4, 7, 3]
+    col_widths=[5, 7, 2.5]
 )
-add_formula("wicket_value = 30 · 2.0 · 1.5 · 1.45 · 1.05 ≈ 137.0")
-add_para("Compare with the same wicket reframed as a spin dismissal of a tailender in the 18th over under low pressure:")
-add_formula("wicket_value = 30 · 1.2 · 0.75 · 1.00 · 1.00 = 27.0")
-add_para("Same raw event (a wicket), more than a 5× spread in context-adjusted value.")
+add_formula("wicket_value = 30 · 2.00 · 1.50 · 1.45 · 1.24 · 1.38 · 1.15 ≈ 256.8")
+add_para("This single ball contributes ~257 to the bowler's running total — more than 8× the base wicket value. That's intentional: it's a rare, league-deciding moment, and CAIS is supposed to surface exactly those events.")
+
+doc.add_heading('11.2  Low-impact wicket', level=2)
+add_para("Same raw outcome — a wicket — but the context is benign: a spinner dismissing a tailender in the 18th over of the 1st innings, after a tiny 8-run last-wicket stand.")
+add_table(
+    headers=['Factor', 'Derivation', 'Value'],
+    rows=[
+        ['Base',               'constant',                              '30'],
+        ['phase × role',       'spin × death',                          '1.20'],
+        ['batter_tier',        'below p25',                             '0.75'],
+        ['form_mult',          'no history, fallback',                  '1.00'],
+        ['wicket_pressure',    '9 wkts / 18 over · 2 = 1.0 → 1+0.10',   '1.10'],
+        ['chase_pressure',     '1st innings',                           '1.00'],
+        ['pressure (combined)','1.10 · 1.00',                           '1.10'],
+        ['partnership_mult',   '8 runs → below 20',                     '1.00'],
+        ['early_wicket_mult',  'not first wicket',                      '1.00'],
+    ],
+    col_widths=[5, 7, 2.5]
+)
+add_formula("wicket_value = 30 · 1.20 · 0.75 · 1.00 · 1.10 · 1.00 · 1.00 ≈ 29.7")
+add_para("A near 9× spread between 11.1 and 11.2 for the same raw event (a dismissal) — which is precisely what 'context-adjusted' is supposed to deliver.")
+
+doc.add_heading('11.3  Run cost on the same balls', level=2)
+add_para("Both balls above carried 0 runs (the wicket ball had no runs conceded), so the run-cost side of the ledger was 0. On non-wicket balls, run_cost dominates:")
+add_formula("run_cost = runs_conceded · phase_bowl_weight · 0.5\n"
+            "  e.g. a powerplay four: 4 · 1.20 · 0.5 = 2.40\n"
+            "       a middle-overs single: 1 · 1.00 · 0.5 = 0.50\n"
+            "       a death-overs six:     6 · 1.30 · 0.5 = 3.90")
 
 # ═══════════════════════════════════════════════════════════════
 #   12. ENGINEERING NOTES
@@ -514,15 +702,29 @@ add_bullet('The _enriched DataFrame is cached on first call; subsequent CAIS com
 #   13. CURRENT CALIBRATION & FUTURE WORK
 # ═══════════════════════════════════════════════════════════════
 doc.add_heading('13.  Calibration Choices & Future Work', level=1)
-add_para("All fixed constants (base = 30, run_cost factor = 0.5, phase weights, phase×role matrix, form floor/ceiling 1.0–1.45, pressure floor/ceiling 1.00–1.30, tier cutoffs 0.75/1.0/1.2/1.5) were chosen by hand based on T20 domain intuition and sanity-checked against PSL data. They are deliberately simple and transparent rather than fitted to an external target.")
-add_para("Natural extensions:", bold=True)
-add_bullet('Second-innings chase pressure — incorporate required-run-rate vs par score.')
+add_para(
+    "All fixed constants (base = 30, run_cost factor = 0.5, phase weights, phase×role "
+    "matrix, form floor/ceiling 1.00–1.45, wicket_pressure floor/ceiling 1.00–1.30, "
+    "chase_pressure floor/ceiling 1.00–1.30, combined-pressure cap 1.50, partnership "
+    "neutral point 20 with slope 0.012 and cap 1.60, early-wicket multipliers 1.35 / "
+    "1.15 / 1.00, tier cutoffs 0.75 / 1.00 / 1.20 / 1.50) were chosen by hand based on "
+    "T20 domain intuition and sanity-checked against PSL data. They are deliberately "
+    "simple and transparent rather than fitted to an external target."
+)
+add_para("Changes from v1 → v2:", bold=True)
+add_bullet('Batting phase weights flipped: powerplay is now treated as the easiest phase (0.95) and death as the hardest (1.35), replacing v1\'s symmetric 1.2 / 1.0 / 1.3 pattern.')
+add_bullet('Pressure decomposed into wicket_pressure × chase_pressure, with chase_pressure (new) driven by 2nd-innings required run rate.')
+add_bullet('Combined pressure cap raised from 1.30 to 1.50 to accommodate the compounded signal.')
+add_bullet('Partnership-broken multiplier added to wicket value.')
+add_bullet('Early-wicket multiplier added to reward first-over breakthroughs.')
+
+add_para("Natural future extensions:", bold=True)
 add_bullet('Venue adjustment — the same ball at Rawalpindi (flat) is less impressive than at Karachi (slow).')
 add_bullet('Head-to-head calibration — if a specific batter historically dominates a bowler, uplift a wicket from that matchup.')
-add_bullet('Partnership-aware pressure — batting with a set partner vs a new one is different.')
+add_bullet('First-innings "par score" pressure — estimate par from venue history, penalise batting well under par and reward bowling holding a side under it.')
 add_bullet('ML-backed tier boundaries — replace quartile tiers with a learned rating (Elo, Glicko) for batter quality.')
 
-add_para("The goal in v1 is explainability: every term in CAIS is a product of transparent, human-interpretable factors. Any ML additions should preserve that property — no black boxes.")
+add_para("The goal remains explainability: every term in CAIS is a product of transparent, human-interpretable factors. Any ML additions should preserve that property — no black boxes.")
 
 # ═══════════════════════════════════════════════════════════════
 out_path = 'CAIS_Methodology.docx'

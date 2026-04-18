@@ -393,35 +393,103 @@ class PSLAnalyzer:
         return inn.set_index(['batter', 'match_id'])['form_mult'].to_dict()
 
     def _build_enriched(self):
-        """Enrich legal deliveries with phase, pressure index, and bowler role."""
+        """Enrich legal deliveries with phase, pressure (wicket + chase),
+        partnership size, early-wicket flag, and bowler role helpers.
+        """
         if hasattr(self, '_enriched'):
             return self._enriched
         data = self.legal.copy()
         if data['over'].min() == 0:
             data['over'] = data['over'] + 1
 
-        # Phase
+        # ── Phase
         data['phase'] = np.select(
             [data['over'] <= 6, data['over'] >= 16],
             ['powerplay', 'death'],
             default='middle'
         )
 
-        # Cumulative wickets per innings (match_id + inning)
-        data = data.sort_values(['match_id', 'inning', 'over', 'ball'])
+        # ── Order deliveries
+        data = data.sort_values(['match_id', 'inning', 'over', 'ball']).reset_index(drop=True)
+
+        # ── Cumulative wickets per innings
         data['cum_wickets'] = data.groupby(['match_id', 'inning'])['is_wicket'].cumsum()
 
-        # Simple pressure index: wickets lost / (over / 20) — higher = more pressure
-        data['pressure'] = (data['cum_wickets'] / data['over'].clip(lower=1) * 2).clip(0, 3)
-        data['pressure'] = (1 + data['pressure'] * 0.1).clip(1.0, 1.3)  # scale to [1.0, 1.3]
+        # ── Balls bowled within innings (1-indexed)
+        data['balls_in_innings'] = (data['over'] - 1) * 6 + data['ball']
 
-        # Phase weights for batting (run value per ball)
-        phase_bat_weight = {'powerplay': 1.2, 'middle': 1.0, 'death': 1.3}
+        # ── Partnership tracking
+        # partnership_key = # wickets that fell BEFORE this ball within the innings.
+        # On a wicket ball itself, key = partnership being broken (so runs stored there = that partnership's size).
+        data['partnership_key'] = (
+            data.groupby(['match_id', 'inning'])['cum_wickets']
+                .shift(1).fillna(0).astype(int)
+        )
+        # Running sum of runs within current partnership, EXCLUDING this ball's contribution.
+        cumsum_in_part = (
+            data.groupby(['match_id', 'inning', 'partnership_key'])['total_runs'].cumsum()
+        )
+        data['partnership_runs'] = (cumsum_in_part - data['total_runs']).clip(lower=0)
+
+        # ── Wicket-loss pressure (in-match collapse pressure)
+        data['pressure_raw'] = (
+            data['cum_wickets'] / data['over'].clip(lower=1) * 2
+        ).clip(0, 3)
+        data['wicket_pressure'] = (1 + data['pressure_raw'] * 0.1).clip(1.0, 1.3)
+
+        # ── Chase pressure (2nd innings required run rate)
+        first_inn_totals = (
+            data[data['inning'] == 1]
+                .groupby('match_id')['total_runs'].sum()
+                .rename('first_innings_total')
+                .reset_index()
+        )
+        data = data.merge(first_inn_totals, on='match_id', how='left')
+
+        mask2 = data['inning'] == 2
+        # Runs scored so far in 2nd innings, BEFORE this ball
+        running = data[mask2].groupby('match_id')['total_runs'].cumsum() - data.loc[mask2, 'total_runs']
+        data['runs_scored_so_far'] = 0.0
+        data.loc[mask2, 'runs_scored_so_far'] = running
+
+        data['target'] = data['first_innings_total'] + 1
+        data['runs_needed'] = (data['target'] - data['runs_scored_so_far']).clip(lower=0)
+        data['balls_remaining'] = (120 - (data['balls_in_innings'] - 1)).clip(lower=1)
+        data['required_rr'] = data['runs_needed'] / (data['balls_remaining'] / 6)
+
+        # Chase pressure: below par RRR of 8 = neutral, ramps linearly to 1.3 at RRR≥15.5
+        data['chase_pressure'] = 1.0
+        is_chase = mask2 & data['target'].notna()
+        data.loc[is_chase, 'chase_pressure'] = np.clip(
+            1 + (data.loc[is_chase, 'required_rr'] - 8.0) * 0.04,
+            1.0, 1.3
+        )
+
+        # ── Combined pressure (wicket-loss × chase), capped at 1.5
+        data['pressure'] = (data['wicket_pressure'] * data['chase_pressure']).clip(1.0, 1.5)
+
+        # ── Phase weights for BATTING (flipped: PP easiest, death hardest)
+        phase_bat_weight = {'powerplay': 0.95, 'middle': 1.15, 'death': 1.35}
         data['phase_bat_weight'] = data['phase'].map(phase_bat_weight)
 
-        # Phase weights for bowling (run cost penalty)
+        # ── Phase weights for BOWLING run cost (unchanged)
         phase_bowl_weight = {'powerplay': 1.2, 'middle': 1.0, 'death': 1.3}
         data['phase_bowl_weight'] = data['phase'].map(phase_bowl_weight)
+
+        # ── Partnership-broken multiplier (for wickets)
+        # Neutral at 20 runs; ramps to 1.6 at 70; floor 1.0
+        data['partnership_mult'] = np.clip(
+            1 + (data['partnership_runs'] - 20) * 0.012, 1.0, 1.6
+        )
+
+        # ── Early-wicket multiplier (for wickets only)
+        # First wicket in first 6 balls: 1.35
+        # First wicket in balls 7–18:    1.15
+        # Any other wicket:              1.0
+        is_first_wkt = (data['partnership_key'] == 0) & (data['is_wicket'] == 1)
+        data['early_wicket_mult'] = 1.0
+        data.loc[is_first_wkt & (data['balls_in_innings'] <= 6),  'early_wicket_mult'] = 1.35
+        data.loc[is_first_wkt & data['balls_in_innings'].between(7, 18), 'early_wicket_mult'] = 1.15
 
         self._enriched = data
         return data
@@ -465,56 +533,61 @@ class PSLAnalyzer:
 
     def cais_bowling(self, min_balls=30, season=None):
         """
-        Context-Adjusted Impact Score — Bowling.
-        Wicket value  = 30 × phase_role_mult × batter_tier × form_mult × pressure
-        Ball score    = wicket_value − runs_conceded × phase_bowl_weight × 0.5
-        CAIS          = Σ(ball_score) / overs
+        Context-Adjusted Impact Score — Bowling (vectorised).
+
+        wicket_value = 30 · phase×role · batter_tier · form · pressure
+                         · partnership_mult · early_wicket_mult
+        run_cost     = runs_conceded · phase_bowl_weight · 0.5
+        CAIS         = Σ(is_wicket · wicket_value − run_cost) / overs
         """
         data = self._build_enriched()
         if season is not None:
             data = data[data['season'] == int(season)]
-        roles      = self._infer_bowler_roles()
-        tiers      = self._batter_tiers()
-        form_map   = self._batter_form_scores()
+        data = data.copy()
+
+        roles    = self._infer_bowler_roles()
+        tiers    = self._batter_tiers()
+        form_map = self._batter_form_scores()
 
         # Phase × Role wicket multiplier
         phase_role = {
-            ('pace', 'powerplay'): 2.0,
-            ('pace', 'middle'):    1.2,
-            ('pace', 'death'):     1.8,
-            ('spin', 'powerplay'): 1.5,
-            ('spin', 'middle'):    1.5,
-            ('spin', 'death'):     1.2,
+            ('pace', 'powerplay'): 2.0, ('pace', 'middle'): 1.2, ('pace', 'death'): 1.8,
+            ('spin', 'powerplay'): 1.5, ('spin', 'middle'): 1.5, ('spin', 'death'): 1.2,
         }
 
+        # ── Per-ball helper columns (vectorised) ────────────────────────
+        data['_tier'] = data['batter'].map(tiers).fillna(1.0)
+        data['_form'] = [form_map.get((b, m), 1.0)
+                         for b, m in zip(data['batter'], data['match_id'])]
+        data['_role'] = data['bowler'].map(roles).fillna('pace')
+        data['_phase_role'] = [phase_role.get((r, p), 1.0)
+                               for r, p in zip(data['_role'], data['phase'])]
+
+        # Per-ball wicket value (will be zeroed on non-wicket balls by is_wicket mask)
+        data['_wicket_value'] = (
+            30 * data['_phase_role']
+               * data['_tier']
+               * data['_form']
+               * data['pressure']
+               * data['partnership_mult']
+               * data['early_wicket_mult']
+        )
+        data['_run_cost'] = data['total_runs'] * data['phase_bowl_weight'] * 0.5
+        data['_ball_score'] = data['is_wicket'] * data['_wicket_value'] - data['_run_cost']
+
+        # ── Aggregate per bowler ─────────────────────────────────────────
         rows = []
         for bowler, grp in data.groupby('bowler'):
             if len(grp) < min_balls:
                 continue
-            role = roles.get(bowler, 'pace')
-            total_score = 0.0
-            for _, ball in grp.iterrows():
-                phase    = ball['phase']
-                pr_mult  = phase_role.get((role, phase), 1.0)
-                bt_tier  = tiers.get(ball['batter'], 1.0)
-                form_m   = form_map.get((ball['batter'], ball['match_id']), 1.0)
-                pressure = ball['pressure']
-
-                wicket_val = 0.0
-                if ball['is_wicket']:
-                    wicket_val = 30 * pr_mult * bt_tier * form_m * pressure
-
-                run_cost = ball['total_runs'] * ball['phase_bowl_weight'] * 0.5
-                total_score += wicket_val - run_cost
-
             overs = len(grp) / 6
             primary_team = (grp['bowling_team'].value_counts().index[0]
                             if len(grp['bowling_team'].dropna()) else None)
             rows.append({
                 'bowler':   bowler,
                 'team':     primary_team,
-                'role':     role,
-                'cais':     round(float(total_score / overs), 2),
+                'role':     roles.get(bowler, 'pace'),
+                'cais':     round(float(grp['_ball_score'].sum() / overs), 2),
                 'wickets':  int(grp['is_wicket'].sum()),
                 'runs_conceded': int(grp['total_runs'].sum()),
                 'economy':  round(float(grp['total_runs'].sum() / overs), 2),
