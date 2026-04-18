@@ -45,6 +45,23 @@ DATA_DIR = Path('data')
 RAW_DIR  = DATA_DIR / 'raw'
 RAW_DIR.mkdir(parents=True, exist_ok=True)
 
+# T20I / World Cup data is dominated by associate-nation fixtures that pollute
+# the leaderboards (e.g. Pakistan batter averaging 90 against Germany). Restrict
+# T20Is and the World Cup view to games between ICC Full-Member nations.
+TEST_NATIONS = {
+    'Afghanistan', 'Australia', 'Bangladesh', 'England', 'India', 'Ireland',
+    'New Zealand', 'Pakistan', 'South Africa', 'Sri Lanka', 'West Indies',
+    'Zimbabwe',
+}
+
+
+def filter_test_nations(df: pd.DataFrame) -> pd.DataFrame:
+    """Drop balls where either side isn't a Test-playing nation."""
+    if df is None or df.empty:
+        return df
+    mask = df['batting_team'].isin(TEST_NATIONS) & df['bowling_team'].isin(TEST_NATIONS)
+    return df[mask].copy()
+
 
 # ── Download helpers ────────────────────────────────────────────────────
 def download(code: str, zip_name: str) -> Path | None:
@@ -215,6 +232,11 @@ def build_one(code: str, zip_name: str) -> pd.DataFrame | None:
     df = convert_zip(zp, code)
     if df.empty:
         return None
+    # Restrict T20Is to Test-playing nations (see TEST_NATIONS).
+    if code == 't20is':
+        before = len(df)
+        df = filter_test_nations(df)
+        print(f'  ⛉  T20Is Test-nations filter: {before:,} → {len(df):,} rows')
     # Cache per-comp CSV
     out = DATA_DIR / f'{code}.csv'
     df.to_csv(out, index=False)
@@ -223,12 +245,18 @@ def build_one(code: str, zip_name: str) -> pd.DataFrame | None:
 
 
 def build_wc(t20is: pd.DataFrame) -> pd.DataFrame:
-    """T20 World Cups = T20Is where event contains 'World Cup'."""
+    """T20 World Cups = T20Is where event contains 'World Cup'.
+
+    T20Is are already Test-nations-filtered by `build_one`, so the WC slice
+    inherits that. (In practice WC fixtures already are Test-nation-only,
+    but the filter is idempotent and costs nothing.)
+    """
     if t20is is None or t20is.empty:
         return pd.DataFrame()
     mask = t20is['event'].fillna('').str.contains('World Cup', case=False, na=False)
     wc = t20is[mask].copy()
     wc['competition'] = 'wc'
+    wc = filter_test_nations(wc)
     out = DATA_DIR / 'wc.csv'
     wc.to_csv(out, index=False)
     print(f'  ✓ wc (from T20Is): {len(wc):,} rows  →  {out}')

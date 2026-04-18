@@ -17,7 +17,7 @@ import json
 import os
 import sys
 import numpy as np
-from CricketAnalyser import PSLAnalyzer
+from CricketAnalyser import CricketAnalyser
 
 ROOT = os.path.join('static', 'data')
 os.makedirs(ROOT, exist_ok=True)
@@ -66,7 +66,7 @@ def save(path, data):
     print(f'  wrote {full}')
 
 
-def build_comp(a: PSLAnalyzer, code: str):
+def build_comp(a: CricketAnalyser, code: str):
     dir_ = code
     print(f'\n── {code} ──')
     # Career views
@@ -131,7 +131,7 @@ def build_comp(a: PSLAnalyzer, code: str):
 
 
 def main(codes):
-    analyzer = PSLAnalyzer('data/all.csv')
+    analyzer = CricketAnalyser('data/all.csv')
     available = sorted(analyzer.df['competition'].unique().tolist())
     if not codes:
         codes = [c for c in COMP_NAMES if c in available]

@@ -3,14 +3,14 @@ from urllib.parse import unquote
 import os
 import numpy as np
 import pandas as pd
-from CricketAnalyser import PSLAnalyzer
+from CricketAnalyser import CricketAnalyser
 
 app = Flask(__name__, template_folder='.', static_folder='static')
 
 # Load combined dataset if present, else fall back to PSL-only.
 DATA_PATH = 'data/all.csv' if os.path.exists('data/all.csv') else 'data/psl.csv'
 print(f'[app] loading {DATA_PATH}…')
-analyzer = PSLAnalyzer(DATA_PATH)
+analyzer = CricketAnalyser(DATA_PATH)
 print(f'[app] loaded {len(analyzer.df):,} rows across '
       f'{analyzer.df["competition"].nunique()} competitions')
 

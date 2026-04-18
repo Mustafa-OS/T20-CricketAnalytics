@@ -9,7 +9,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
   <style>
     /* ══════════════════════════════════════════════════════════════════
-       PSL INSIGHTS — dark slate · amber accent · bright multi-colour charts
+       CONTEXT XI — dark slate · amber accent · bright multi-colour charts
        ══════════════════════════════════════════════════════════════════ */
     :root {
       --bg:          #0a0e14;
@@ -693,6 +693,71 @@
 
     .hidden { display: none !important; }
 
+    /* ── Welcome / league-picker overlay ─────────────────────
+       Full-screen blocker shown on first visit and when user
+       clicks the comp badge to switch. No main-app paint until
+       a league is chosen. */
+    .welcome {
+      position: fixed; inset: 0;
+      z-index: 300;
+      background:
+        radial-gradient(ellipse 900px 500px at 50% 0%, rgba(251,191,36,0.14), transparent 55%),
+        radial-gradient(ellipse 700px 400px at 20% 100%, rgba(34,211,238,0.08), transparent 60%),
+        rgba(5,8,12,0.96);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      overflow-y: auto;
+      animation: fadeIn .2s;
+    }
+    .welcome.hidden { display: none; }
+    .welcome-inner {
+      max-width: 1100px; margin: 0 auto;
+      padding: 60px 28px 80px;
+      text-align: center;
+    }
+    .welcome-logo {
+      font-family: 'Space Grotesk', sans-serif;
+      font-weight: 700; font-size: 22px;
+      letter-spacing: -0.01em;
+      color: var(--text);
+      margin-bottom: 8px;
+    }
+    .welcome-logo span { color: var(--accent); }
+    .welcome-title {
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: clamp(30px, 4.5vw, 46px);
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      line-height: 1.1;
+      margin: 12px 0 14px;
+    }
+    .welcome-title .accent {
+      background: linear-gradient(135deg, var(--accent), var(--cyan));
+      -webkit-background-clip: text; background-clip: text; color: transparent;
+    }
+    .welcome-sub {
+      color: var(--text-soft); font-size: 15.5px;
+      max-width: 620px; margin: 0 auto 36px;
+      line-height: 1.55;
+    }
+    .welcome-close {
+      position: absolute; top: 18px; right: 18px;
+      width: 38px; height: 38px;
+      display: flex; align-items: center; justify-content: center;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      color: var(--text-soft); font-size: 20px;
+      transition: all .12s;
+    }
+    .welcome-close:hover { color: var(--accent); border-color: var(--accent); }
+    .welcome-close.hidden { display: none !important; }
+    .welcome-skeleton {
+      padding: 32px;
+      color: var(--text-muted);
+      font-size: 13px;
+    }
+
     /* scrollbar */
     ::-webkit-scrollbar { width: 10px; height: 10px; }
     ::-webkit-scrollbar-track { background: var(--bg); }
@@ -711,12 +776,29 @@
 </head>
 <body>
 
+<!-- ═══════════ LEAGUE PICKER (blocking on first visit) ═══════════ -->
+<div id="welcome" class="welcome hidden">
+  <button id="welcome-close" class="welcome-close hidden" title="Close">✕</button>
+  <div class="welcome-inner">
+    <div class="welcome-logo">⚡ Context <span>XI</span></div>
+    <h1 class="welcome-title">Pick a <span class="accent">competition</span></h1>
+    <p class="welcome-sub">
+      Every major T20 league, every men's T20 international, every T20 World Cup —
+      each one is its own self-contained leaderboard. Pick one to start; you can
+      swap any time from the badge in the top bar.
+    </p>
+    <div id="welcome-grid" class="comp-grid">
+      <div class="welcome-skeleton">Loading competitions…</div>
+    </div>
+  </div>
+</div>
+
 <!-- ═══════════ TOP BAR ═══════════ -->
 <header class="topbar">
   <div class="topbar-inner">
     <div class="brand" data-view="home">
       <div class="brand-wordmark">⚡ Context <span>XI</span></div>
-      <button id="comp-badge" class="comp-badge" title="Change competition">PSL</button>
+      <button id="comp-badge" class="comp-badge" title="Change competition">—</button>
     </div>
 
     <nav class="topnav">
@@ -761,7 +843,7 @@
 
     <div id="comp-cta" class="hero-cta" style="justify-content:center;margin-top:32px">
       <button class="btn btn-primary" data-view="cais">
-        ⚡ Explore CAIS in <span id="cta-comp-name">PSL</span>
+        ⚡ Explore CAIS in <span id="cta-comp-name">your league</span>
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
              stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
           <line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>
@@ -815,7 +897,7 @@
         <strong>CAIS does not.</strong>
       </p>
       <p>
-        The metric is built on PSL ball-by-ball data. Every delivery is re-priced
+        The metric is built on ball-by-ball data from every major T20 competition. Every delivery is re-priced
         before it hits the tally.
       </p>
     </div>
@@ -1158,7 +1240,7 @@
 
 <script>
 /* ╔═══════════════════════════════════════════════════════════════════╗
-   ║  PSL INSIGHTS — App logic                                        ║
+   ║  CONTEXT XI — App logic                                          ║
    ╚═══════════════════════════════════════════════════════════════════╝ */
 
 /* ── Palette ─────────────────────────────────────────────── */
@@ -1936,9 +2018,14 @@ async function loadCompetitions() {
   } catch(_) { COMPS_MANIFEST = []; }
 }
 
-function renderCompGrid() {
-  const el = document.getElementById('comp-grid');
+/* Render the picker into any container (home grid OR welcome modal grid). */
+function paintCompGrid(containerId) {
+  const el = document.getElementById(containerId);
   if (!el) return;
+  if (!COMPS_MANIFEST.length) {
+    el.innerHTML = '<div class="welcome-skeleton">No competition data found — run <code>python precompute.py</code>.</div>';
+    return;
+  }
   el.innerHTML = COMPS_MANIFEST.map(c => `
     <div class="comp-card ${c.code === APP.comp ? 'active' : ''}" data-comp="${c.code}">
       <div class="comp-card-name">${c.name}</div>
@@ -1954,6 +2041,11 @@ function renderCompGrid() {
   });
 }
 
+function renderCompGrid() {
+  paintCompGrid('comp-grid');
+  paintCompGrid('welcome-grid');
+}
+
 function updateCompBadge() {
   const c = COMPS_MANIFEST.find(x => x.code === APP.comp);
   const label = c ? c.code.toUpperCase() : APP.comp.toUpperCase();
@@ -1962,24 +2054,67 @@ function updateCompBadge() {
   if (cta) cta.textContent = c ? c.name : APP.comp.toUpperCase();
 }
 
+/* Every Plotly chart we render lives in a known div. Wiping them on
+   comp-switch is the only reliable way to stop old-league data flashing
+   before the new data arrives. */
+const CHART_IDS = [
+  'cais-bat-chart', 'cais-bat-scatter', 'cais-bowl-chart', 'cais-bowl-role',
+  'c-batting-runs', 'c-batting-sr', 'c-batting-scatter',
+  'c-bowling-wkts', 'c-bowling-econ', 'c-bowling-scatter',
+  'c-rec-scores', 'c-rec-cent', 'c-teams-wins', 'c-teams-wr',
+  'c-dis-pie', 'c-dis-bar',
+  'modal-bat-seasons', 'modal-bat-innings', 'modal-bowl-seasons',
+];
+function purgeAllCharts() {
+  CHART_IDS.forEach(id => {
+    const el = document.getElementById(id);
+    if (el && window.Plotly) { try { Plotly.purge(el); } catch(_) {} }
+  });
+  // Also wipe every leaderboard table body — otherwise rows from the old
+  // competition sit there until the new data lands.
+  ['cais-bat-table', 'cais-bowl-table', 'batting-table', 'bowling-table'].forEach(id => {
+    const t = document.getElementById(id);
+    if (t) t.innerHTML = '';
+  });
+  ['cais-bat-stats', 'cais-bowl-stats'].forEach(id => {
+    const s = document.getElementById(id);
+    if (s) s.innerHTML = '';
+  });
+}
+
 async function selectComp(code) {
-  if (code === APP.comp) return;
+  const first = localStorage.getItem('comp') === null;
+  const changed = code !== APP.comp;
   APP.comp = code;
-  // Wipe caches of dependent views and reload whichever is active.
-  for (const k of Object.keys(loaded)) loaded[k] = false;
-  loaded.home = true;
+  hideWelcome();
+
+  if (!first && !changed) { return; }
+
+  // Wipe every cache and every painted surface.
+  purgeAllCharts();
+  for (const k of Object.keys(LOADERS)) loaded[k] = false;
   caisState.season = '';
   caisState.team = '';
+  caisState.mode = 'batting';
   caisState.data = { batting: null, bowling: null };
   battingState.season = '';
   bowlingState.season = '';
   PLAYERS = [];
+  SEASONS = [];
+  TEAMS = [];
+
   renderCompGrid();
   updateCompBadge();
-  // Refresh current view
-  const active = document.querySelector('.view.active');
-  const current = active ? active.id.replace('view-', '') : 'home';
-  if (LOADERS[current]) { await LOADERS[current](); loaded[current] = true; }
+
+  // First-time users get dropped straight into the CAIS flagship view.
+  // Existing users stay on whichever view they're on, so it just refreshes.
+  if (first) {
+    showView('cais');
+  } else {
+    const active = document.querySelector('.view.active');
+    const current = active ? active.id.replace('view-', '') : 'home';
+    if (LOADERS[current]) { await LOADERS[current](); loaded[current] = true; }
+  }
 }
 
 async function loadHome() {
@@ -1988,18 +2123,44 @@ async function loadHome() {
   updateCompBadge();
 }
 
-// Badge in topbar → go home (to change competition)
+/* ── Welcome / blocking league modal ────────────────────── */
+function showWelcome() {
+  const w = document.getElementById('welcome');
+  w.classList.remove('hidden');
+  document.body.style.overflow = 'hidden';
+  // Show close button only if a comp was already picked previously
+  // (i.e. the user is swapping, not doing a first-time pick).
+  const hasChosen = localStorage.getItem('comp') !== null;
+  document.getElementById('welcome-close').classList.toggle('hidden', !hasChosen);
+}
+function hideWelcome() {
+  document.getElementById('welcome').classList.add('hidden');
+  document.body.style.overflow = '';
+}
+document.getElementById('welcome-close').onclick = hideWelcome;
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && localStorage.getItem('comp') !== null) hideWelcome();
+});
+
+// Badge in topbar → reopen league picker.
 document.getElementById('comp-badge').onclick = (e) => {
   e.stopPropagation();
-  showView('home');
+  showWelcome();
 };
 
 (async () => {
   await loadCompetitions();
   renderCompGrid();
   updateCompBadge();
-  loadPlayersList();
   loaded['home'] = true;
+
+  // First visit? Block the app with the welcome modal until they pick.
+  if (localStorage.getItem('comp') === null) {
+    showWelcome();
+  } else {
+    // Returning user — quietly preload the search index in the background.
+    loadPlayersList();
+  }
 })();
 </script>
 

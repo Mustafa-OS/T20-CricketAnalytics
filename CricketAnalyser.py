@@ -1,20 +1,84 @@
+import os
 import pandas as pd
 import numpy as np
 from collections import defaultdict
 import warnings
 warnings.filterwarnings('ignore')
 
-class PSLAnalyzer:
+class CricketAnalyser:
     """Cricket Statistics Analyzer (multi-competition)."""
+
+    # ICC Full-Member nations. Applied to the t20is + wc views so associate
+    # fixtures don't dilute leaderboards (a 90-avg against Germany is noise).
+    TEST_NATIONS = {
+        'Afghanistan', 'Australia', 'Bangladesh', 'England', 'India', 'Ireland',
+        'New Zealand', 'Pakistan', 'South Africa', 'Sri Lanka', 'West Indies',
+        'Zimbabwe',
+    }
 
     def __init__(self, csv_path, competition=None):
         """Load a ball-by-ball CSV. When `competition` is given on construction,
-        every downstream method is scoped to that competition by default."""
-        self.df = pd.read_csv(csv_path, low_memory=False)
+        every downstream method is scoped to that competition by default.
+
+        A parquet sidecar (`<path>.parquet`) is written on first load; subsequent
+        loads read that instead — ~5× faster on large datasets.
+        """
+        parquet_path = csv_path.rsplit('.', 1)[0] + '.parquet'
+        use_parquet = (
+            os.path.exists(parquet_path)
+            and (not os.path.exists(csv_path)
+                 or os.path.getmtime(parquet_path) >= os.path.getmtime(csv_path))
+        )
+        if use_parquet:
+            try:
+                self.df = pd.read_parquet(parquet_path)
+            except Exception as e:
+                print(f'[CricketAnalyser] parquet read failed ({e}); falling back to CSV')
+                self.df = pd.read_csv(csv_path, low_memory=False)
+                use_parquet = False
+        else:
+            self.df = pd.read_csv(csv_path, low_memory=False)
+
         if 'competition' not in self.df.columns:
             self.df['competition'] = 'unknown'
+
+        # Safety net: whatever the source CSV / parquet contained, strip
+        # associate-nation games out of the T20I and WC slices.
+        self.df = self._apply_test_nations_filter(self.df)
+
+        if not use_parquet:
+            # Write parquet cache for next run.
+            try:
+                self.df.to_parquet(parquet_path, index=False)
+                print(f'[CricketAnalyser] wrote parquet cache → {parquet_path}')
+            except Exception as e:
+                print(f'[CricketAnalyser] parquet cache skipped: {e}')
+
         self.default_comp = competition
         self.legal = self.df[self.df["extras_type"] != 'wides'].copy()
+
+        # Per-competition memoization of expensive derived tables.
+        self._enriched_cache = {}
+        self._form_cache     = {}
+        self._tier_cache     = {}
+        self._role_cache     = {}
+
+    @classmethod
+    def _apply_test_nations_filter(cls, df: pd.DataFrame) -> pd.DataFrame:
+        """Drop t20is + wc balls where either team isn't a Test-playing nation.
+        Other competitions (franchise leagues) pass through untouched."""
+        if df is None or len(df) == 0 or 'competition' not in df.columns:
+            return df
+        target = df['competition'].isin({'t20is', 'wc'})
+        if not target.any():
+            return df
+        in_scope = (
+            df['batting_team'].isin(cls.TEST_NATIONS)
+            & df['bowling_team'].isin(cls.TEST_NATIONS)
+        )
+        # Keep every non-target row, plus target rows between Test nations.
+        keep = (~target) | in_scope
+        return df[keep].reset_index(drop=True)
 
     def _scope(self, season=None, competition=None):
         """Legal-deliveries DataFrame filtered to season and/or competition."""
@@ -384,9 +448,14 @@ class PSLAnalyzer:
 
     # ── CAIS Engine ──────────────────────────────────────────────────────────
 
-    def _infer_bowler_roles(self):
+    def _infer_bowler_roles(self, competition=None):
         """Return dict {bowler: 'spin'|'pace'} inferred from over distribution."""
-        data = self.legal.copy()
+        comp = competition if competition is not None else self.default_comp
+        key  = comp or '__all__'
+        if key in self._role_cache:
+            return self._role_cache[key]
+        base = self.legal if not comp else self.legal[self.legal['competition'] == comp]
+        data = base.copy()
         if data['over'].min() == 0:
             data['over'] = data['over'] + 1
         data['middle'] = data['over'].between(7, 15)
@@ -396,11 +465,17 @@ class PSLAnalyzer:
                        .reset_index())
         role_df['mid_pct'] = role_df['mid_balls'] / role_df['total_balls']
         role_df['role'] = role_df['mid_pct'].apply(lambda x: 'spin' if x > 0.55 else 'pace')
-        return dict(zip(role_df['bowler'], role_df['role']))
+        result = dict(zip(role_df['bowler'], role_df['role']))
+        self._role_cache[key] = result
+        return result
 
-    def _batter_tiers(self):
+    def _batter_tiers(self, competition=None):
         """Return dict {batter: tier_multiplier} based on career avg + SR percentiles."""
-        stats = self.batting_averages(min_innings=5)
+        comp = competition if competition is not None else self.default_comp
+        key  = comp or '__all__'
+        if key in self._tier_cache:
+            return self._tier_cache[key]
+        stats = self.batting_averages(min_innings=5, competition=comp)
         # Replace inf with NaN for percentile calc
         avg_vals = stats['average'].replace(np.inf, np.nan)
         sr_vals  = stats['SR']
@@ -417,11 +492,18 @@ class PSLAnalyzer:
             elif s >= p25: return 1.0    # average
             else:          return 0.75   # lower-tier
         tiers = score.apply(tier)
-        return dict(zip(stats['batter'], tiers))
+        result = dict(zip(stats['batter'], tiers))
+        self._tier_cache[key] = result
+        return result
 
-    def _batter_form_scores(self, window=3):
+    def _batter_form_scores(self, window=3, competition=None):
         """Rolling form multiplier per batter (based on last `window` matches before each game)."""
-        data = self.legal.copy()
+        comp = competition if competition is not None else self.default_comp
+        ckey = comp or '__all__'
+        if ckey in self._form_cache:
+            return self._form_cache[ckey]
+        base = self.legal if not comp else self.legal[self.legal['competition'] == comp]
+        data = base.copy()
         data = data.sort_values('date')
         inn = (data.groupby(['batter', 'match_id', 'date'])['batsman_runs']
                    .sum().reset_index())
@@ -437,15 +519,23 @@ class PSLAnalyzer:
             ratio = runs / overall_mean
             return float(np.clip(0.85 + 0.6 * ratio, 1.0, 1.45))
         inn['form_mult'] = inn['form_runs'].apply(form_mult)
-        return inn.set_index(['batter', 'match_id'])['form_mult'].to_dict()
+        result = inn.set_index(['batter', 'match_id'])['form_mult'].to_dict()
+        self._form_cache[ckey] = result
+        return result
 
-    def _build_enriched(self):
+    def _build_enriched(self, competition=None):
         """Enrich legal deliveries with phase, pressure (wicket + chase),
         partnership size, early-wicket flag, and bowler role helpers.
+
+        Memoised per-competition so switching leagues doesn't re-process the
+        full 2 M-row frame each time.
         """
-        if hasattr(self, '_enriched'):
-            return self._enriched
-        data = self.legal.copy()
+        comp = competition if competition is not None else self.default_comp
+        key  = comp or '__all__'
+        if key in self._enriched_cache:
+            return self._enriched_cache[key]
+        base = self.legal if not comp else self.legal[self.legal['competition'] == comp]
+        data = base.copy()
         if data['over'].min() == 0:
             data['over'] = data['over'] + 1
 
@@ -538,7 +628,7 @@ class PSLAnalyzer:
         data.loc[is_first_wkt & (data['balls_in_innings'] <= 6),  'early_wicket_mult'] = 1.35
         data.loc[is_first_wkt & data['balls_in_innings'].between(7, 18), 'early_wicket_mult'] = 1.15
 
-        self._enriched = data
+        self._enriched_cache[key] = data
         return data
 
     def cais_batting(self, min_balls=50, season=None, min_runs=200, competition=None):
@@ -546,13 +636,11 @@ class PSLAnalyzer:
         Context-Adjusted Impact Score — Batting.
         CAIS = Σ(runs × phase_weight × pressure) / balls × 100 × form_avg
         """
-        data = self._build_enriched()
         comp = competition if competition is not None else self.default_comp
-        if comp:
-            data = data[data['competition'] == comp]
+        data = self._build_enriched(competition=comp)
         if season is not None:
             data = data[data['season'] == int(season)]
-        form_map = self._batter_form_scores()
+        form_map = self._batter_form_scores(competition=comp)
 
         rows = []
         for batter, grp in data.groupby('batter'):
@@ -592,17 +680,15 @@ class PSLAnalyzer:
         run_cost     = runs_conceded · phase_bowl_weight · 0.5
         CAIS         = Σ(is_wicket · wicket_value − run_cost) / overs
         """
-        data = self._build_enriched()
         comp = competition if competition is not None else self.default_comp
-        if comp:
-            data = data[data['competition'] == comp]
+        data = self._build_enriched(competition=comp)
         if season is not None:
             data = data[data['season'] == int(season)]
         data = data.copy()
 
-        roles    = self._infer_bowler_roles()
-        tiers    = self._batter_tiers()
-        form_map = self._batter_form_scores()
+        roles    = self._infer_bowler_roles(competition=comp)
+        tiers    = self._batter_tiers(competition=comp)
+        form_map = self._batter_form_scores(competition=comp)
 
         # Phase × Role wicket multiplier
         phase_role = {
@@ -664,10 +750,13 @@ class PSLAnalyzer:
 
 if __name__ == "__main__":
     # Initialize analyzer
-    analyzer = PSLAnalyzer('data/psl.csv')
-    
+    import os
+    csv_path = 'data/all.csv' if os.path.exists('data/all.csv') else 'data/psl.csv'
+    analyzer = CricketAnalyser(csv_path)
+
     print("="*60)
-    print("PSL CRICKET STATS ANALYZER")
+    print("CONTEXT XI — T20 CRICKET ANALYTICS")
+    print(f"loaded {len(analyzer.df):,} rows from {csv_path}")
     print("="*60)
     
     # 1. Batting averages

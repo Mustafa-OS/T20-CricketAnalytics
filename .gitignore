@@ -9,6 +9,8 @@ data/raw/
 
 # Per-competition and combined CSVs — too large for git; regenerated from zips
 data/*.csv
+# Parquet sidecar cache — auto-built from CSV on first analyzer load
+data/*.parquet
 
 # Word doc backup
 ~$*.docx
