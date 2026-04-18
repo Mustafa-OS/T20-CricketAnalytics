@@ -18,7 +18,7 @@ class PSLAnalyzer:
             return self.legal
         return self.legal[self.legal['season'] == int(season)]
 
-    def batting_averages(self, min_innings=5, season=None):
+    def batting_averages(self, min_innings=5, season=None, min_runs=200):
         """Calculate batting averages and aggregate stats"""
         legal = self._scope(season)
         innings = legal.groupby(['batter', 'match_id', 'batting_team'])['batsman_runs'].sum().reset_index()
@@ -39,7 +39,8 @@ class PSLAnalyzer:
         stats = stats.merge(balls_faced, on='batter', how='left')
         stats['SR'] = (stats['total_runs'] / stats['balls_faced'] * 100).round(2)
 
-        return stats[stats['matches'] >= min_innings].sort_values('total_runs', ascending=False)
+        stats = stats[(stats['matches'] >= min_innings) & (stats['total_runs'] >= min_runs)]
+        return stats.sort_values('total_runs', ascending=False)
     
     def highest_scores(self, top_n=20):
         """Get highest individual scores"""
@@ -49,11 +50,11 @@ class PSLAnalyzer:
         highest = innings.nlargest(top_n, 'runs')[['batter', 'batting_team', 'date', 'runs']]
         return highest.reset_index(drop=True)
     
-    def bowling_stats(self, min_balls=30, season=None):
+    def bowling_stats(self, min_balls=30, season=None, min_wickets=10):
         """Calculate bowling statistics"""
         legal = self._scope(season)
         legal_balls = legal[legal['bowler'].notna()]
-        
+
         stats = legal_balls.groupby('bowler').agg({
             'total_runs': 'sum',
             'is_wicket': 'sum',
@@ -61,13 +62,14 @@ class PSLAnalyzer:
             'id': 'count'  # total balls
         }).reset_index()
         stats.columns = ['bowler', 'runs_conceded', 'wickets', 'matches', 'balls']
-        
+
         stats['economy'] = (stats['runs_conceded'] / (stats['balls'] / 6)).round(2)
         stats['avg'] = (stats['runs_conceded'] / (stats['wickets'] + 0.001)).round(2)
-        
-        return stats[stats['balls'] >= min_balls].sort_values('wickets', ascending=False)
+
+        stats = stats[(stats['balls'] >= min_balls) & (stats['wickets'] >= min_wickets)]
+        return stats.sort_values('wickets', ascending=False)
     
-    def strike_rate_analysis(self, min_balls=100, season=None):
+    def strike_rate_analysis(self, min_balls=100, season=None, min_runs=200):
         """Analyze strike rates for batters"""
         legal = self._scope(season)
         batter_data = legal.groupby('batter').agg({
@@ -76,10 +78,10 @@ class PSLAnalyzer:
             'match_id': 'nunique'
         }).reset_index()
         batter_data.columns = ['batter', 'runs', 'balls', 'matches']
-        
+
         batter_data['SR'] = (batter_data['runs'] / batter_data['balls'] * 100).round(2)
-        batter_data = batter_data[batter_data['balls'] >= min_balls]
-        
+        batter_data = batter_data[(batter_data['balls'] >= min_balls) & (batter_data['runs'] >= min_runs)]
+
         return batter_data.sort_values('SR', ascending=False)
     
     def team_performance(self):
@@ -261,6 +263,31 @@ class PSLAnalyzer:
                          .reset_index())
             bseas['economy'] = (bseas['runs'] / (bseas['balls'] / 6)).round(2)
             result['bowling_seasons'] = bseas.to_dict(orient='records')
+
+        # ── CAIS rankings (career) ───────────────────────────────────────
+        try:
+            cb = self.cais_batting(min_balls=50, min_runs=200)
+            row = cb[cb['batter'] == name]
+            if len(row):
+                result['cais_batting'] = {
+                    'score': float(row.iloc[0]['cais']),
+                    'rank':  int(row.iloc[0]['rank']),
+                    'total': int(len(cb)),
+                }
+        except Exception:
+            pass
+
+        try:
+            cbw = self.cais_bowling(min_balls=30, min_wickets=10)
+            row = cbw[cbw['bowler'] == name]
+            if len(row):
+                result['cais_bowling'] = {
+                    'score': float(row.iloc[0]['cais']),
+                    'rank':  int(row.iloc[0]['rank']),
+                    'total': int(len(cbw)),
+                }
+        except Exception:
+            pass
 
         return result
 
@@ -494,7 +521,7 @@ class PSLAnalyzer:
         self._enriched = data
         return data
 
-    def cais_batting(self, min_balls=50, season=None):
+    def cais_batting(self, min_balls=50, season=None, min_runs=200):
         """
         Context-Adjusted Impact Score — Batting.
         CAIS = Σ(runs × phase_weight × pressure) / balls × 100 × form_avg
@@ -507,6 +534,8 @@ class PSLAnalyzer:
         rows = []
         for batter, grp in data.groupby('batter'):
             if len(grp) < min_balls:
+                continue
+            if int(grp['batsman_runs'].sum()) < min_runs:
                 continue
             weighted_runs = (grp['batsman_runs']
                              * grp['phase_bat_weight']
@@ -531,7 +560,7 @@ class PSLAnalyzer:
         df['rank'] = df.index + 1
         return df
 
-    def cais_bowling(self, min_balls=30, season=None):
+    def cais_bowling(self, min_balls=30, season=None, min_wickets=10):
         """
         Context-Adjusted Impact Score — Bowling (vectorised).
 
@@ -579,6 +608,8 @@ class PSLAnalyzer:
         rows = []
         for bowler, grp in data.groupby('bowler'):
             if len(grp) < min_balls:
+                continue
+            if int(grp['is_wicket'].sum()) < min_wickets:
                 continue
             overs = len(grp) / 6
             primary_team = (grp['bowling_team'].value_counts().index[0]

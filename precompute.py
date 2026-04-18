@@ -42,9 +42,9 @@ def save(name, data):
 
 print('Generating static JSON files...')
 
-save('batting',       serialize(analyzer.batting_averages(min_innings=10).head(20)))
-save('strike-rates',  serialize(analyzer.strike_rate_analysis(min_balls=150).head(20)))
-save('bowling',       serialize(analyzer.bowling_stats(min_balls=30).head(25)))
+save('batting',       serialize(analyzer.batting_averages(min_innings=10, min_runs=200)))
+save('strike-rates',  serialize(analyzer.strike_rate_analysis(min_balls=150, min_runs=200)))
+save('bowling',       serialize(analyzer.bowling_stats(min_balls=30, min_wickets=10)))
 save('teams',         serialize(analyzer.team_performance()))
 save('highest-scores',serialize(analyzer.highest_scores(top_n=15)))
 save('dismissals',    serialize(analyzer.dismissal_analysis()))
@@ -55,18 +55,18 @@ save('players',       sorted(
 save('over-heatmap',  _clean(analyzer.over_heatmap()))
 save('phase-stats',   _clean(analyzer.phase_stats()))
 save('matchup',       _clean(analyzer.matchup_heatmap()))
-save('cais-batting',  serialize(analyzer.cais_batting(min_balls=50)))
-save('cais-bowling',  serialize(analyzer.cais_bowling(min_balls=30)))
+save('cais-batting',  serialize(analyzer.cais_batting(min_balls=50, min_runs=200)))
+save('cais-bowling',  serialize(analyzer.cais_bowling(min_balls=30, min_wickets=10)))
 
 # Per-season files (for static site filtering)
 seasons = sorted(analyzer.df['season'].dropna().unique().tolist())
 for s in seasons:
     si = int(s)
-    save(f'cais-batting-{si}', serialize(analyzer.cais_batting(min_balls=20, season=si)))
-    save(f'cais-bowling-{si}', serialize(analyzer.cais_bowling(min_balls=12, season=si)))
-    save(f'batting-{si}',      serialize(analyzer.batting_averages(min_innings=3, season=si).head(25)))
-    save(f'strike-rates-{si}', serialize(analyzer.strike_rate_analysis(min_balls=50, season=si).head(25)))
-    save(f'bowling-{si}',      serialize(analyzer.bowling_stats(min_balls=12, season=si).head(30)))
+    save(f'cais-batting-{si}', serialize(analyzer.cais_batting(min_balls=20, season=si, min_runs=200)))
+    save(f'cais-bowling-{si}', serialize(analyzer.cais_bowling(min_balls=12, season=si, min_wickets=10)))
+    save(f'batting-{si}',      serialize(analyzer.batting_averages(min_innings=3, season=si, min_runs=200)))
+    save(f'strike-rates-{si}', serialize(analyzer.strike_rate_analysis(min_balls=50, season=si, min_runs=200)))
+    save(f'bowling-{si}',      serialize(analyzer.bowling_stats(min_balls=12, season=si, min_wickets=10)))
 save('seasons', [int(s) for s in seasons])
 
 centuries_df = analyzer.century_makers()

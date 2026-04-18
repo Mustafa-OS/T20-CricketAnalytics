@@ -7,14 +7,12 @@ from CricketAnalyser import PSLAnalyzer
 app = Flask(__name__, template_folder='.', static_folder='static')
 analyzer = PSLAnalyzer('data/psl.csv')
 
-
 # ── Serialisers ──────────────────────────────────────────────────────────────
 
 def serialize(df):
     """DataFrame → JSON-safe list of dicts."""
     records = df.replace([np.inf, -np.inf], np.nan).to_dict(orient='records')
     return [_clean(row) for row in records]
-
 
 def _clean(obj):
     """Recursively convert numpy scalars and strip inf/NaN."""
@@ -42,21 +40,24 @@ def index():
 def batting():
     season = request.args.get('season', type=int)
     mi = 10 if season is None else 3
-    return jsonify(serialize(analyzer.batting_averages(min_innings=mi, season=season).head(25)))
+    mr = 200
+    return jsonify(serialize(analyzer.batting_averages(min_innings=mi, season=season, min_runs=mr)))
 
 
 @app.route('/api/strike-rates')
 def strike_rates():
     season = request.args.get('season', type=int)
     mb = 150 if season is None else 50
-    return jsonify(serialize(analyzer.strike_rate_analysis(min_balls=mb, season=season).head(25)))
+    mr = 200
+    return jsonify(serialize(analyzer.strike_rate_analysis(min_balls=mb, season=season, min_runs=mr)))
 
 
 @app.route('/api/bowling')
 def bowling():
     season = request.args.get('season', type=int)
     mb = 30 if season is None else 12
-    return jsonify(serialize(analyzer.bowling_stats(min_balls=mb, season=season).head(30)))
+    mw = 10
+    return jsonify(serialize(analyzer.bowling_stats(min_balls=mb, season=season, min_wickets=mw)))
 
 
 @app.route('/api/teams')
@@ -116,14 +117,16 @@ def matchup():
 def cais_batting():
     season = request.args.get('season', type=int)
     min_balls = request.args.get('min_balls', default=50, type=int)
-    return jsonify(serialize(analyzer.cais_batting(min_balls=min_balls, season=season)))
+    mr = 200
+    return jsonify(serialize(analyzer.cais_batting(min_balls=min_balls, season=season, min_runs=mr)))
 
 
 @app.route('/api/cais/bowling')
 def cais_bowling():
     season = request.args.get('season', type=int)
     min_balls = request.args.get('min_balls', default=30, type=int)
-    return jsonify(serialize(analyzer.cais_bowling(min_balls=min_balls, season=season)))
+    mw = 10
+    return jsonify(serialize(analyzer.cais_bowling(min_balls=min_balls, season=season, min_wickets=mw)))
 
 
 if __name__ == '__main__':

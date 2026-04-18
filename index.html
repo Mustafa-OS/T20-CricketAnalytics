@@ -514,6 +514,11 @@
       font-family: 'Space Grotesk', sans-serif;
     }
     .lb .name { font-weight: 600; color: var(--text); }
+    .lb tbody td.name {
+      cursor: pointer;
+      transition: color .12s;
+    }
+    .lb tbody td.name:hover { color: var(--accent); text-decoration: underline; }
     .lb .team-tag {
       display: inline-block;
       padding: 2px 8px;
@@ -525,6 +530,27 @@
     }
     .role-pace { color: var(--blue); font-weight: 600; font-size: 11px; }
     .role-spin { color: var(--violet); font-weight: 600; font-size: 11px; }
+
+    /* Leaderboard find-player input */
+    .lb-search {
+      float: right;
+      margin-left: 12px;
+      padding: 6px 12px;
+      background: var(--bg-2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-size: 13px;
+      outline: none;
+      width: 180px;
+      transition: border-color .15s;
+    }
+    .lb-search:focus { border-color: var(--accent); }
+    .lb tbody tr.hit {
+      background: rgba(251, 191, 36, 0.12) !important;
+      outline: 1px solid var(--accent);
+    }
+    .lb tbody tr.dim { opacity: 0.3; }
 
     /* ── Player profile overlay ───────────────────────────── */
     .modal-backdrop {
@@ -774,7 +800,10 @@
       <div id="cais-bat-stats" class="stat-cards"></div>
       <div class="grid">
         <div class="card">
-          <div class="card-title">Top 20 Leaderboard</div>
+          <div class="card-title">Leaderboard
+            <input type="text" id="cais-bat-search" placeholder="Find player…"
+                   class="lb-search" autocomplete="off"/>
+          </div>
           <div style="max-height:560px;overflow:auto">
             <table class="lb" id="cais-bat-table"></table>
           </div>
@@ -798,7 +827,10 @@
       <div id="cais-bowl-stats" class="stat-cards"></div>
       <div class="grid">
         <div class="card">
-          <div class="card-title">Top 20 Leaderboard</div>
+          <div class="card-title">Leaderboard
+            <input type="text" id="cais-bowl-search" placeholder="Find player…"
+                   class="lb-search" autocomplete="off"/>
+          </div>
           <div style="max-height:560px;overflow:auto">
             <table class="lb" id="cais-bowl-table"></table>
           </div>
@@ -955,6 +987,16 @@
       <div id="batting-season-chips" class="chip-group"></div>
     </div>
 
+    <div class="card full" style="margin-bottom:20px">
+      <div class="card-title">Batting Leaderboard
+        <input type="text" id="batting-search" placeholder="Find batter…"
+               class="lb-search" autocomplete="off"/>
+      </div>
+      <div style="max-height:560px;overflow:auto">
+        <table class="lb" id="batting-table"></table>
+      </div>
+    </div>
+
     <div class="grid">
       <div class="card"><div class="card-title">Top 15 Run Scorers</div><div id="c-batting-runs"></div></div>
       <div class="card"><div class="card-title">Top Strike Rates (min 150 balls)</div><div id="c-batting-sr"></div></div>
@@ -970,6 +1012,16 @@
     <div class="filter-bar">
       <span class="label">Season</span>
       <div id="bowling-season-chips" class="chip-group"></div>
+    </div>
+
+    <div class="card full" style="margin-bottom:20px">
+      <div class="card-title">Bowling Leaderboard
+        <input type="text" id="bowling-search" placeholder="Find bowler…"
+               class="lb-search" autocomplete="off"/>
+      </div>
+      <div style="max-height:560px;overflow:auto">
+        <table class="lb" id="bowling-table"></table>
+      </div>
     </div>
 
     <div class="grid">
@@ -1252,7 +1304,7 @@ function renderCaisStats(kind, rows) {
 
 function renderCaisBatTable(rows) {
   const el = document.getElementById('cais-bat-table');
-  const top = rows.slice(0, 20);
+  // Always render ALL rows (so search can find anyone); CSS scroll container handles height.
   el.innerHTML = `
     <thead><tr>
       <th>#</th><th>Batter</th><th>Team</th>
@@ -1262,8 +1314,8 @@ function renderCaisBatTable(rows) {
       <th class="num" style="text-align:right">Balls</th>
     </tr></thead>
     <tbody>
-      ${top.map((r, i) => `
-        <tr class="${i < 3 ? 'top3' : ''}">
+      ${rows.map((r, i) => `
+        <tr data-name="${r.batter.toLowerCase()}" class="${i < 3 ? 'top3' : ''}">
           <td>${i + 1}</td>
           <td class="name">${r.batter}</td>
           <td>${r.team ? `<span class="team-tag">${r.team.split(' ').map(w=>w[0]).join('')}</span>` : '—'}</td>
@@ -1277,7 +1329,6 @@ function renderCaisBatTable(rows) {
 
 function renderCaisBowlTable(rows) {
   const el = document.getElementById('cais-bowl-table');
-  const top = rows.slice(0, 20);
   el.innerHTML = `
     <thead><tr>
       <th>#</th><th>Bowler</th><th>Role</th><th>Team</th>
@@ -1286,8 +1337,8 @@ function renderCaisBowlTable(rows) {
       <th class="num" style="text-align:right">Econ</th>
     </tr></thead>
     <tbody>
-      ${top.map((r, i) => `
-        <tr class="${i < 3 ? 'top3' : ''}">
+      ${rows.map((r, i) => `
+        <tr data-name="${r.bowler.toLowerCase()}" class="${i < 3 ? 'top3' : ''}">
           <td>${i + 1}</td>
           <td class="name">${r.bowler}</td>
           <td><span class="role-${r.role}">${r.role.toUpperCase()}</span></td>
@@ -1298,6 +1349,36 @@ function renderCaisBowlTable(rows) {
         </tr>`).join('')}
     </tbody>`;
 }
+
+/* Shared leaderboard find-player helper */
+function attachLbSearch(inputId, tableId) {
+  const input = document.getElementById(inputId);
+  if (!input) return;
+  input.oninput = () => {
+    const q = input.value.trim().toLowerCase();
+    const tbody = document.querySelector(`#${tableId} tbody`);
+    if (!tbody) return;
+    const rows = tbody.querySelectorAll('tr');
+    let firstHit = null;
+    rows.forEach(tr => {
+      tr.classList.remove('hit', 'dim');
+      if (!q) return;
+      const match = tr.dataset.name && tr.dataset.name.includes(q);
+      if (match) { tr.classList.add('hit'); if (!firstHit) firstHit = tr; }
+      else tr.classList.add('dim');
+    });
+    if (firstHit) firstHit.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  };
+}
+
+/* Delegated click: any leaderboard name cell opens the player modal. */
+document.addEventListener('click', (e) => {
+  const td = e.target.closest('.lb td.name');
+  if (!td) return;
+  const tr = td.closest('tr');
+  const name = td.textContent.trim();
+  if (name) openPlayer(name);
+});
 
 function renderCaisBatCharts(rows) {
   const top = rows.slice(0, 20);
@@ -1376,6 +1457,8 @@ async function renderCais() {
   renderCaisBowlTable(bowlFilt);
   renderCaisBatCharts(batFilt);
   renderCaisBowlCharts(bowlFilt);
+  attachLbSearch('cais-bat-search',  'cais-bat-table');
+  attachLbSearch('cais-bowl-search', 'cais-bowl-table');
 }
 
 function showCaisPanel(kind) {
@@ -1420,6 +1503,32 @@ async function renderBatting() {
     apiGet('batting',      { season: battingState.season }),
     apiGet('strike-rates', { season: battingState.season }),
   ]);
+
+  // Full leaderboard (all fetched rows) — search filters across it.
+  const tbl = document.getElementById('batting-table');
+  tbl.innerHTML = `
+    <thead><tr>
+      <th>#</th><th>Batter</th>
+      <th class="num" style="text-align:right">Runs</th>
+      <th class="num" style="text-align:right">Matches</th>
+      <th class="num" style="text-align:right">Avg</th>
+      <th class="num" style="text-align:right">SR</th>
+      <th class="num" style="text-align:right">Balls</th>
+    </tr></thead>
+    <tbody>
+      ${data.map((d, i) => `
+        <tr data-name="${d.batter.toLowerCase()}" class="${i < 3 ? 'top3' : ''}">
+          <td>${i + 1}</td>
+          <td class="name">${d.batter}</td>
+          <td class="num">${d.total_runs}</td>
+          <td class="num">${d.matches}</td>
+          <td class="num">${d.average != null ? d.average : '—'}</td>
+          <td class="num">${d.SR != null ? d.SR : '—'}</td>
+          <td class="num">${d.balls_faced ?? '—'}</td>
+        </tr>`).join('')}
+    </tbody>`;
+  attachLbSearch('batting-search', 'batting-table');
+
   const top = data.slice(0, 15);
   hBar('c-batting-runs', top.map(d => d.batter), top.map(d => d.total_runs),
        { xTitle: 'Runs', color: PAL.amber, height: 440 });
@@ -1461,6 +1570,33 @@ async function loadBatting() {
 const bowlingState = { season: '' };
 async function renderBowling() {
   const data = await apiGet('bowling', { season: bowlingState.season });
+
+  // Full leaderboard
+  const tbl = document.getElementById('bowling-table');
+  const sorted = [...data].sort((a,b) => b.wickets - a.wickets);
+  tbl.innerHTML = `
+    <thead><tr>
+      <th>#</th><th>Bowler</th>
+      <th class="num" style="text-align:right">Wkts</th>
+      <th class="num" style="text-align:right">Matches</th>
+      <th class="num" style="text-align:right">Econ</th>
+      <th class="num" style="text-align:right">Avg</th>
+      <th class="num" style="text-align:right">Balls</th>
+    </tr></thead>
+    <tbody>
+      ${sorted.map((d, i) => `
+        <tr data-name="${d.bowler.toLowerCase()}" class="${i < 3 ? 'top3' : ''}">
+          <td>${i + 1}</td>
+          <td class="name">${d.bowler}</td>
+          <td class="num">${d.wickets}</td>
+          <td class="num">${d.matches}</td>
+          <td class="num">${d.economy != null ? d.economy : '—'}</td>
+          <td class="num">${d.avg != null ? d.avg : '—'}</td>
+          <td class="num">${d.balls}</td>
+        </tr>`).join('')}
+    </tbody>`;
+  attachLbSearch('bowling-search', 'bowling-table');
+
   const byW = [...data].sort((a,b) => b.wickets - a.wickets).slice(0, 15);
   hBar('c-bowling-wkts', byW.map(d => d.bowler), byW.map(d => d.wickets),
        { xTitle: 'Wickets', color: PAL.rose, height: 440 });
@@ -1612,13 +1748,19 @@ async function openPlayer(name) {
   if (p.batting) {
     document.getElementById('modal-batting').classList.remove('hidden');
     const b = p.batting;
+    const cb = p.cais_batting;
+    const caisStat = cb
+      ? `<div class="stat"><div class="stat-label">CAIS (rank)</div>
+           <div class="stat-value accent">${cb.score.toFixed(1)} <span style="font-size:13px;color:var(--text-soft)">#${cb.rank}/${cb.total}</span></div></div>`
+      : '';
     document.getElementById('modal-bat-stats').innerHTML = `
       <div class="stat"><div class="stat-label">Runs</div>  <div class="stat-value accent">${b.total_runs}</div></div>
       <div class="stat"><div class="stat-label">Avg</div>   <div class="stat-value">${b.average ?? '—'}</div></div>
       <div class="stat"><div class="stat-label">SR</div>    <div class="stat-value cyan">${b.sr ?? '—'}</div></div>
       <div class="stat"><div class="stat-label">Highest</div><div class="stat-value emerald">${b.highest}</div></div>
       <div class="stat"><div class="stat-label">50s/100s</div><div class="stat-value">${b.fifties}/${b.hundreds}</div></div>
-      <div class="stat"><div class="stat-label">Matches</div><div class="stat-value">${b.matches}</div></div>`;
+      <div class="stat"><div class="stat-label">Matches</div><div class="stat-value">${b.matches}</div></div>
+      ${caisStat}`;
 
     const seas = p.batting_seasons || [];
     Plotly.newPlot('modal-bat-seasons', [{
@@ -1645,11 +1787,17 @@ async function openPlayer(name) {
   if (p.bowling) {
     document.getElementById('modal-bowling').classList.remove('hidden');
     const b = p.bowling;
+    const cbw = p.cais_bowling;
+    const caisBowlStat = cbw
+      ? `<div class="stat"><div class="stat-label">CAIS (rank)</div>
+           <div class="stat-value accent">${cbw.score.toFixed(2)} <span style="font-size:13px;color:var(--text-soft)">#${cbw.rank}/${cbw.total}</span></div></div>`
+      : '';
     document.getElementById('modal-bowl-stats').innerHTML = `
       <div class="stat"><div class="stat-label">Wickets</div> <div class="stat-value accent">${b.wickets}</div></div>
       <div class="stat"><div class="stat-label">Economy</div> <div class="stat-value cyan">${b.economy ?? '—'}</div></div>
       <div class="stat"><div class="stat-label">Average</div> <div class="stat-value">${b.average ?? '—'}</div></div>
-      <div class="stat"><div class="stat-label">Matches</div> <div class="stat-value">${b.matches}</div></div>`;
+      <div class="stat"><div class="stat-label">Matches</div> <div class="stat-value">${b.matches}</div></div>
+      ${caisBowlStat}`;
 
     const seas = p.bowling_seasons || [];
     Plotly.newPlot('modal-bowl-seasons', [{
