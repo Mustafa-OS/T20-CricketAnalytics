@@ -920,8 +920,9 @@
     <h2 class="section-title">⚡ CAIS — Context-Adjusted Impact Score</h2>
     <p class="section-sub">
       Every ball re-priced by match phase, bowler type, batter quality, form, and pressure.
-      Pick a season to zoom in on a single campaign, or leave it on <strong>All seasons</strong>
-      for career totals.
+      Tap any year to filter — <strong>tap multiple</strong> to combine them into a single view
+      (a player who appears in more than one of the picked years is aggregated, not duplicated).
+      Tap <strong>All</strong> to clear back to career totals.
     </p>
 
     <!-- Filter bar -->
@@ -1307,6 +1308,115 @@ async function apiGet(ep, query = {}) {
   return fetch(`static/data/${APP.comp}/${file}.json`).then(r => r.json());
 }
 
+/* Fetch a leaderboard across zero, one, or many seasons and merge rows.
+   - seasons = [] → career view (single fetch, no merging)
+   - seasons = [s] → per-season view (single fetch, no merging)
+   - seasons.length > 1 → fetch each season's JSON and combine rows per player
+     using `merger`, which receives a list of rows for the same player and
+     returns one merged row. */
+async function apiGetSeasons(ep, seasons, merger) {
+  if (!seasons || seasons.length === 0) return apiGet(ep);
+  if (seasons.length === 1) return apiGet(ep, { season: seasons[0] });
+  const parts = await Promise.all(seasons.map(s => apiGet(ep, { season: s })));
+  // Group rows across all seasons by the "identity" key merger picks.
+  const buckets = new Map();
+  parts.forEach(rows => {
+    if (!Array.isArray(rows)) return;
+    rows.forEach(r => {
+      const key = merger.key(r);
+      if (!buckets.has(key)) buckets.set(key, []);
+      buckets.get(key).push(r);
+    });
+  });
+  return [...buckets.values()].map(rows => merger.combine(rows));
+}
+
+/* Row mergers. Sum raw counters, re-derive rates, weight CAIS by balls. */
+const MERGE = {
+  batting: {
+    key: r => r.batter,
+    combine: rows => {
+      const runs    = rows.reduce((s,r) => s + (r.total_runs || 0), 0);
+      const matches = rows.reduce((s,r) => s + (r.matches    || 0), 0);
+      const dism    = rows.reduce((s,r) => s + (r.dismissals || 0), 0);
+      const balls   = rows.reduce((s,r) => s + (r.balls_faced|| 0), 0);
+      return {
+        batter:      rows[0].batter,
+        total_runs:  runs, matches, dismissals: dism, balls_faced: balls,
+        average: dism  ? +(runs / dism).toFixed(2)         : null,
+        SR:      balls ? +(runs / balls * 100).toFixed(2)  : null,
+      };
+    },
+  },
+  'strike-rates': {
+    key: r => r.batter,
+    combine: rows => {
+      const runs    = rows.reduce((s,r) => s + (r.runs    || 0), 0);
+      const balls   = rows.reduce((s,r) => s + (r.balls   || 0), 0);
+      const matches = rows.reduce((s,r) => s + (r.matches || 0), 0);
+      return {
+        batter: rows[0].batter,
+        runs, balls, matches,
+        SR: balls ? +(runs / balls * 100).toFixed(2) : null,
+      };
+    },
+  },
+  bowling: {
+    key: r => r.bowler,
+    combine: rows => {
+      const runs    = rows.reduce((s,r) => s + (r.runs_conceded || 0), 0);
+      const wkts    = rows.reduce((s,r) => s + (r.wickets       || 0), 0);
+      const matches = rows.reduce((s,r) => s + (r.matches       || 0), 0);
+      const balls   = rows.reduce((s,r) => s + (r.balls         || 0), 0);
+      return {
+        bowler: rows[0].bowler,
+        runs_conceded: runs, wickets: wkts, matches, balls,
+        economy: balls ? +(runs / (balls/6)).toFixed(2) : null,
+        avg:     wkts  ? +(runs / wkts).toFixed(2)      : null,
+      };
+    },
+  },
+  'cais-batting': {
+    key: r => r.batter,
+    combine: rows => {
+      const runs    = rows.reduce((s,r) => s + (r.runs    || 0), 0);
+      const balls   = rows.reduce((s,r) => s + (r.balls   || 0), 0);
+      const matches = rows.reduce((s,r) => s + (r.matches || 0), 0);
+      // Weighted mean of CAIS by balls — each season's CAIS is already a per-ball rate.
+      const caisWeighted = rows.reduce((s,r) => s + (r.cais || 0) * (r.balls || 0), 0);
+      const cais = balls ? +(caisWeighted / balls).toFixed(2) : 0;
+      const rawSr = balls ? +(runs / balls * 100).toFixed(2) : 0;
+      // Pick the most common team across included seasons.
+      const teamTally = {};
+      rows.forEach(r => { if (r.team) teamTally[r.team] = (teamTally[r.team] || 0) + (r.balls || 0); });
+      const team = Object.entries(teamTally).sort((a,b) => b[1]-a[1])[0]?.[0] ?? null;
+      return { batter: rows[0].batter, team, cais, raw_sr: rawSr, runs, balls, matches };
+    },
+  },
+  'cais-bowling': {
+    key: r => r.bowler,
+    combine: rows => {
+      const runs  = rows.reduce((s,r) => s + (r.runs_conceded || 0), 0);
+      const wkts  = rows.reduce((s,r) => s + (r.wickets       || 0), 0);
+      const balls = rows.reduce((s,r) => s + (r.balls         || 0), 0);
+      const matches = rows.reduce((s,r) => s + (r.matches     || 0), 0);
+      const overs = balls / 6;
+      // CAIS here is "per over" already; weight by overs.
+      const caisWeighted = rows.reduce((s,r) => s + (r.cais || 0) * ((r.balls || 0)/6), 0);
+      const cais = overs ? +(caisWeighted / overs).toFixed(2) : 0;
+      const econ = overs ? +(runs / overs).toFixed(2) : 0;
+      const teamTally = {};
+      rows.forEach(r => { if (r.team) teamTally[r.team] = (teamTally[r.team] || 0) + (r.balls || 0); });
+      const team = Object.entries(teamTally).sort((a,b) => b[1]-a[1])[0]?.[0] ?? null;
+      // Role: pick whichever role accumulated more balls across the picked seasons.
+      const roleTally = { pace: 0, spin: 0 };
+      rows.forEach(r => { if (r.role) roleTally[r.role] += (r.balls || 0); });
+      const role = roleTally.spin > roleTally.pace ? 'spin' : 'pace';
+      return { bowler: rows[0].bowler, team, role, cais, wickets: wkts, runs_conceded: runs, economy: econ, balls, matches };
+    },
+  },
+};
+
 /* ── View router ────────────────────────────────────────── */
 const loaded = {};
 function showView(name) {
@@ -1397,23 +1507,38 @@ async function loadSeasons() {
     }
   } catch(_) { SEASONS = []; }
 }
-function buildSeasonChips(containerId, onChange, initial = '') {
+/* Multi-select season chips. The state is a Set of season numbers; when the
+   Set is empty, 'All' is active (= no filter). Clicking a year toggles it.
+   Clicking 'All' clears the selection. onChange fires with a sorted array. */
+function buildSeasonChips(containerId, onChange, selected = new Set()) {
   const el = document.getElementById(containerId);
   el.innerHTML = '';
+  const refresh = () => {
+    el.querySelectorAll('[data-season]').forEach(c => {
+      const v = c.dataset.season;
+      const isAll = v === '';
+      c.classList.toggle('active', isAll ? selected.size === 0 : selected.has(Number(v)));
+    });
+  };
   const mkChip = (value, label) => {
     const b = document.createElement('button');
-    b.className = 'chip' + (String(initial) === String(value) ? ' active' : '');
+    b.className = 'chip';
     b.dataset.season = value;
     b.textContent = label;
     b.onclick = () => {
-      el.querySelectorAll('.chip').forEach(c => c.classList.remove('active'));
-      b.classList.add('active');
-      onChange(value);
+      if (value === '') { selected.clear(); }
+      else {
+        const n = Number(value);
+        if (selected.has(n)) selected.delete(n); else selected.add(n);
+      }
+      refresh();
+      onChange([...selected].sort((a, b) => a - b));
     };
     el.appendChild(b);
   };
   mkChip('', 'All');
   SEASONS.forEach(s => mkChip(s, s));
+  refresh();
 }
 
 let TEAMS = [];
@@ -1428,14 +1553,20 @@ async function loadTeams() {
    CAIS  (the main event)
    ══════════════════════════════════════════════════════════ */
 const caisState = {
-  season: '',
+  seasons: [],        // empty = career view; otherwise list of selected years
   team: '',
   mode: 'batting',
   data: { batting: null, bowling: null },
 };
 
 async function fetchCaisData(kind) {
-  const data = await apiGet(`cais/${kind}`, { season: caisState.season });
+  const data = await apiGetSeasons(`cais/${kind}`, caisState.seasons, MERGE[`cais-${kind}`]);
+  // Post-merge: re-sort by CAIS and assign rank (the raw server responses are
+  // already ranked; merged results need re-ranking).
+  if (Array.isArray(data)) {
+    data.sort((a, b) => (b.cais ?? 0) - (a.cais ?? 0));
+    data.forEach((r, i) => r.rank = i + 1);
+  }
   caisState.data[kind] = data;
   return data;
 }
@@ -1635,11 +1766,11 @@ function showCaisPanel(kind) {
 async function loadCais() {
   await loadSeasons();
   await loadTeams();
-  buildSeasonChips('cais-season-chips', async (s) => {
-    caisState.season = s;
+  buildSeasonChips('cais-season-chips', async (sel) => {
+    caisState.seasons = sel;
     caisState.data = { batting: null, bowling: null };
     await renderCais();
-  });
+  }, new Set(caisState.seasons));
   // team chips (dynamic, per-competition)
   const tel = document.getElementById('cais-team-chips');
   tel.innerHTML = '<button class="chip active" data-team="">All</button>' +
@@ -1661,12 +1792,17 @@ async function loadCais() {
 /* ══════════════════════════════════════════════════════════
    BATTING VIEW
    ══════════════════════════════════════════════════════════ */
-const battingState = { season: '' };
+const battingState = { seasons: [] };
 async function renderBatting() {
-  const [data, sr] = await Promise.all([
-    apiGet('batting',      { season: battingState.season }),
-    apiGet('strike-rates', { season: battingState.season }),
+  let [data, sr] = await Promise.all([
+    apiGetSeasons('batting',      battingState.seasons, MERGE.batting),
+    apiGetSeasons('strike-rates', battingState.seasons, MERGE['strike-rates']),
   ]);
+  // Re-sort merged output by runs / SR respectively.
+  if (battingState.seasons.length > 1) {
+    data = [...data].sort((a, b) => (b.total_runs ?? 0) - (a.total_runs ?? 0));
+    sr   = [...sr  ].sort((a, b) => (b.SR         ?? 0) - (a.SR         ?? 0));
+  }
 
   // Full leaderboard (all fetched rows) — search filters across it.
   const tbl = document.getElementById('batting-table');
@@ -1722,18 +1858,21 @@ async function renderBatting() {
 }
 async function loadBatting() {
   await loadSeasons();
-  buildSeasonChips('batting-season-chips', async (s) => {
-    battingState.season = s; await renderBatting();
-  });
+  buildSeasonChips('batting-season-chips', async (sel) => {
+    battingState.seasons = sel; await renderBatting();
+  }, new Set(battingState.seasons));
   await renderBatting();
 }
 
 /* ══════════════════════════════════════════════════════════
    BOWLING VIEW
    ══════════════════════════════════════════════════════════ */
-const bowlingState = { season: '' };
+const bowlingState = { seasons: [] };
 async function renderBowling() {
-  const data = await apiGet('bowling', { season: bowlingState.season });
+  let data = await apiGetSeasons('bowling', bowlingState.seasons, MERGE.bowling);
+  if (bowlingState.seasons.length > 1) {
+    data = [...data].sort((a, b) => (b.wickets ?? 0) - (a.wickets ?? 0));
+  }
 
   // Full leaderboard
   const tbl = document.getElementById('bowling-table');
@@ -1796,9 +1935,9 @@ async function renderBowling() {
 }
 async function loadBowling() {
   await loadSeasons();
-  buildSeasonChips('bowling-season-chips', async (s) => {
-    bowlingState.season = s; await renderBowling();
-  });
+  buildSeasonChips('bowling-season-chips', async (sel) => {
+    bowlingState.seasons = sel; await renderBowling();
+  }, new Set(bowlingState.seasons));
   await renderBowling();
 }
 
@@ -2093,12 +2232,12 @@ async function selectComp(code) {
   // Wipe every cache and every painted surface.
   purgeAllCharts();
   for (const k of Object.keys(LOADERS)) loaded[k] = false;
-  caisState.season = '';
+  caisState.seasons = [];
   caisState.team = '';
   caisState.mode = 'batting';
   caisState.data = { batting: null, bowling: null };
-  battingState.season = '';
-  bowlingState.season = '';
+  battingState.seasons = [];
+  bowlingState.seasons = [];
   PLAYERS = [];
   SEASONS = [];
   TEAMS = [];

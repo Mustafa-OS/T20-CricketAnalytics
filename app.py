@@ -104,8 +104,10 @@ def seasons():
 @app.route('/api/batting')
 def batting():
     season = request.args.get('season', type=int)
-    mi = 10 if season is None else 3
-    mr = 200
+    # Career thresholds filter out tail-end noise; per-season thresholds
+    # accept anyone with a realistic workload.
+    mi = 15 if season is None else 5
+    mr = 400 if season is None else 120
     return jsonify(serialize(analyzer.batting_averages(
         min_innings=mi, season=season, min_runs=mr, competition=_comp())))
 
@@ -113,8 +115,8 @@ def batting():
 @app.route('/api/strike-rates')
 def strike_rates():
     season = request.args.get('season', type=int)
-    mb = 150 if season is None else 50
-    mr = 200
+    mb = 300 if season is None else 90
+    mr = 300 if season is None else 120
     return jsonify(serialize(analyzer.strike_rate_analysis(
         min_balls=mb, season=season, min_runs=mr, competition=_comp())))
 
@@ -122,8 +124,8 @@ def strike_rates():
 @app.route('/api/bowling')
 def bowling():
     season = request.args.get('season', type=int)
-    mb = 30 if season is None else 12
-    mw = 10
+    mb = 120 if season is None else 48
+    mw = 15 if season is None else 6
     return jsonify(serialize(analyzer.bowling_stats(
         min_balls=mb, season=season, min_wickets=mw, competition=_comp())))
 
@@ -186,19 +188,25 @@ def matchup():
 @app.route('/api/cais/batting')
 def cais_batting():
     season = request.args.get('season', type=int)
-    min_balls = request.args.get('min_balls', default=50, type=int)
-    mr = 200
+    # Career: ~200 balls faced + 400 runs keeps bench players off the board.
+    # Season: ~75 balls + 120 runs (≈ a half-decent campaign).
+    default_balls = 200 if season is None else 75
+    default_runs  = 400 if season is None else 120
+    min_balls = request.args.get('min_balls', default=default_balls, type=int)
+    min_runs  = request.args.get('min_runs',  default=default_runs,  type=int)
     return jsonify(serialize(analyzer.cais_batting(
-        min_balls=min_balls, season=season, min_runs=mr, competition=_comp())))
+        min_balls=min_balls, season=season, min_runs=min_runs, competition=_comp())))
 
 
 @app.route('/api/cais/bowling')
 def cais_bowling():
     season = request.args.get('season', type=int)
-    min_balls = request.args.get('min_balls', default=30, type=int)
-    mw = 10
+    default_balls   = 120 if season is None else 48
+    default_wickets = 15  if season is None else 6
+    min_balls   = request.args.get('min_balls',   default=default_balls,   type=int)
+    min_wickets = request.args.get('min_wickets', default=default_wickets, type=int)
     return jsonify(serialize(analyzer.cais_bowling(
-        min_balls=min_balls, season=season, min_wickets=mw, competition=_comp())))
+        min_balls=min_balls, season=season, min_wickets=min_wickets, competition=_comp())))
 
 
 if __name__ == '__main__':

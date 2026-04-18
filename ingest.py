@@ -245,16 +245,22 @@ def build_one(code: str, zip_name: str) -> pd.DataFrame | None:
 
 
 def build_wc(t20is: pd.DataFrame) -> pd.DataFrame:
-    """T20 World Cups = T20Is where event contains 'World Cup'.
+    """T20 World Cups = T20Is with a core WC event name.
 
-    T20Is are already Test-nations-filtered by `build_one`, so the WC slice
-    inherits that. (In practice WC fixtures already are Test-nation-only,
-    but the filter is idempotent and costs nothing.)
+    Catches every naming variant Cricsheet has used:
+      • "ICC Men's T20 World Cup"   (2013+)
+      • "ICC World Twenty20"         (2007–2012, some 2015)
+      • "World T20"                  (2014, 2016)
+    Explicitly EXCLUDES qualifier / regional / tri-series feeder events so
+    only the main tournament remains. T20Is are already Test-nations-filtered
+    by `build_one`, and the filter re-applies here as a safety net.
     """
     if t20is is None or t20is.empty:
         return pd.DataFrame()
-    mask = t20is['event'].fillna('').str.contains('World Cup', case=False, na=False)
-    wc = t20is[mask].copy()
+    evs = t20is['event'].fillna('').astype(str)
+    kw_main = evs.str.contains(r'(?i)world cup|world twenty20|world t20')
+    kw_bad  = evs.str.contains(r'(?i)qualif|region|tri-series|sub\s|quadrangular')
+    wc = t20is[kw_main & ~kw_bad].copy()
     wc['competition'] = 'wc'
     wc = filter_test_nations(wc)
     out = DATA_DIR / 'wc.csv'
