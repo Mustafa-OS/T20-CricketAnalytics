@@ -551,34 +551,6 @@
     .stat-value.emerald { color: var(--emerald); }
     .stat-value.rose { color: var(--rose); }
 
-    /* Skeleton tiles shown while the player profile is fetching —
-       shimmer over the card body, dashes for label + value. The
-       .loaded flag (toggled when real data arrives) kills the
-       animation instantly so there's no flash mismatch. */
-    @keyframes skel-pulse {
-      0%   { background-position:   0% 50%; }
-      100% { background-position: 200% 50%; }
-    }
-    .stat.skel {
-      background: linear-gradient(90deg,
-        var(--card) 0%, rgba(255,255,255,0.04) 50%, var(--card) 100%);
-      background-size: 200% 100%;
-      animation: skel-pulse 1.1s linear infinite;
-    }
-    .stat.skel .stat-label, .stat.skel .stat-value { opacity: 0.35; }
-
-    /* Chart-area skeleton: a subtle shimmering block placeholder so
-       users see the Plotly slot reserving space while it renders. */
-    .chart-skel {
-      height: 280px;
-      border-radius: var(--radius-sm);
-      background: linear-gradient(90deg,
-        var(--card) 0%, rgba(255,255,255,0.04) 50%, var(--card) 100%);
-      background-size: 200% 100%;
-      animation: skel-pulse 1.1s linear infinite;
-      margin: 14px 0;
-    }
-
     /* Spinner dot shown next to the modal title while loading. */
     @keyframes spin { to { transform: rotate(360deg); } }
     .modal-spinner {
@@ -590,6 +562,28 @@
       animation: spin 0.75s linear infinite;
       margin-left: 10px;
       vertical-align: middle;
+    }
+
+    /* Big centred loader inside the modal body during fetch. We use this
+       instead of optimistic section skeletons because those were leaving
+       ghost empty chart cards on screen for pure-batter profiles. */
+    .modal-loading {
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      padding: 80px 20px 60px;
+      gap: 16px;
+    }
+    .modal-loading.hidden { display: none !important; }
+    .modal-loading-ring {
+      width: 44px; height: 44px;
+      border: 3px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    .modal-loading-text {
+      font-size: 13px; color: var(--text-muted);
+      letter-spacing: 0.02em;
     }
 
     /* Leaderboard table */
@@ -2267,14 +2261,6 @@ function prefetchPlayer(name) {
   fetchPlayerProfile(name).catch(() => {});
 }
 
-/* Skeleton tile used while we wait on the profile fetch. A bank of these
-   fills the stat rows instantly so the modal shows structure + a pulse
-   instead of a bare name header. Dashes are CSS-free placeholders — no
-   extra render cost and they blend with the normal stat layout. */
-const SKELETON_TILE =
-  '<div class="stat skel"><div class="stat-label">&nbsp;</div>' +
-  '<div class="stat-value" style="opacity:.35">—</div></div>';
-
 async function openPlayer(name) {
   const t0 = performance.now();
   const modal = document.getElementById('player-modal');
@@ -2286,30 +2272,52 @@ async function openPlayer(name) {
     `${name}<span class="modal-spinner" id="modal-spinner" aria-label="loading"></span>`;
   document.getElementById('modal-none').classList.add('hidden');
 
-  // Phase 0 — paint a skeleton INSTANTLY, before awaiting the fetch.
-  // This is the difference between "modal shows name then sits empty
-  // for seconds" and "modal shows a populated-looking shell right away".
-  // We render 6 placeholder tiles for batting + 4 for bowling (matches
-  // the real counts) and show both blocks optimistically; they hide
-  // themselves in the fill phase if the player doesn't have that role.
-  document.getElementById('modal-batting').classList.remove('hidden');
-  document.getElementById('modal-bowling').classList.remove('hidden');
-  document.getElementById('modal-bat-stats').innerHTML =
-    Array(6).fill(SKELETON_TILE).join('');
-  document.getElementById('modal-bowl-stats').innerHTML =
-    Array(4).fill(SKELETON_TILE).join('');
-  // Chart slots get a shimmering placeholder block until Plotly renders
-  // over them — same perception trick as the stat tiles.
-  const skelChart = '<div class="chart-skel"></div>';
-  document.getElementById('modal-bat-seasons').innerHTML = skelChart;
-  document.getElementById('modal-bat-innings').innerHTML = skelChart;
-  document.getElementById('modal-bowl-seasons').innerHTML = skelChart;
+  // Phase 0 — keep sections HIDDEN during the fetch so we never paint
+  // a section the player doesn't have. The inline title-spinner already
+  // signals "loading"; revealing empty batting+bowling shells upfront
+  // was leaving ghost chart cards on screen for pure batters because
+  // chart-skeleton divs inside the Plotly targets weren't always cleared
+  // cleanly when Plotly rendered, and skeleton chart cards for bowling
+  // kept a 280-px empty block visible under the batting charts.
+  //
+  // New rule: sections start hidden, and ONLY the ones with real data
+  // get revealed in phase 1. No optimistic skeletons means no ghost
+  // cards, ever.
+  document.getElementById('modal-batting').classList.add('hidden');
+  document.getElementById('modal-bowling').classList.add('hidden');
+  // Wipe any chart state from the previous player so we start clean.
+  ['modal-bat-seasons', 'modal-bat-innings', 'modal-bowl-seasons'].forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (window.Plotly) { try { Plotly.purge(el); } catch(_) {} }
+    el.innerHTML = '';
+  });
+  document.getElementById('modal-bat-stats').innerHTML = '';
+  document.getElementById('modal-bowl-stats').innerHTML = '';
+
+  // A centred body loader — so the modal body isn't a blank canvas while
+  // we wait on the fetch. The title spinner is tiny; this one is a big
+  // ring users can't miss. Torn down on every completion path below.
+  const body = document.querySelector('#player-modal .modal-body');
+  let loader = document.getElementById('modal-loading');
+  if (!loader) {
+    loader = document.createElement('div');
+    loader.id = 'modal-loading';
+    loader.className = 'modal-loading';
+    loader.innerHTML =
+      '<div class="modal-loading-ring"></div>' +
+      '<div class="modal-loading-text">Loading profile…</div>';
+    body.appendChild(loader);
+  }
+  loader.classList.remove('hidden');
   modal.classList.remove('hidden');
   document.body.style.overflow = 'hidden';
 
   const clearSpinner = () => {
     const s = document.getElementById('modal-spinner');
     if (s) s.remove();
+    const l = document.getElementById('modal-loading');
+    if (l) l.classList.add('hidden');
   };
 
   let p;
