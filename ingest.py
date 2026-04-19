@@ -254,6 +254,12 @@ def build_wc(t20is: pd.DataFrame) -> pd.DataFrame:
     Explicitly EXCLUDES qualifier / regional / tri-series feeder events so
     only the main tournament remains. T20Is are already Test-nations-filtered
     by `build_one`, and the filter re-applies here as a safety net.
+
+    Cricsheet uses split-year season codes like "2013/14" for tournaments
+    that cross the calendar boundary, which truncate to the starting year
+    (so the 2014 WC shows up as season=2013, 2016 as 2015, 2026 as 2025).
+    The user-facing label should be the tournament year, so we override
+    `season` with the calendar year of the match date per match_id.
     """
     if t20is is None or t20is.empty:
         return pd.DataFrame()
@@ -263,9 +269,21 @@ def build_wc(t20is: pd.DataFrame) -> pd.DataFrame:
     wc = t20is[kw_main & ~kw_bad].copy()
     wc['competition'] = 'wc'
     wc = filter_test_nations(wc)
+
+    # Re-derive season from match date — one stable year per match_id.
+    if not wc.empty:
+        dt = pd.to_datetime(wc['date'], errors='coerce')
+        # Use the minimum date per match as the canonical tournament-year
+        # anchor; Cricsheet rows within a match share a date anyway.
+        match_year = dt.dt.year.groupby(wc['match_id']).transform('min')
+        wc['season'] = match_year.astype('Int64')
+
     out = DATA_DIR / 'wc.csv'
     wc.to_csv(out, index=False)
-    print(f'  ✓ wc (from T20Is): {len(wc):,} rows  →  {out}')
+    if not wc.empty:
+        yrs = sorted(wc['season'].dropna().unique().tolist())
+        print(f'  ✓ wc (from T20Is): {len(wc):,} rows  →  {out}')
+        print(f'    tournament years: {yrs}')
     return wc
 
 

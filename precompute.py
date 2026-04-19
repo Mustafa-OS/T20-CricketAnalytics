@@ -117,16 +117,18 @@ def build_comp(a: CricketAnalyser, code: str):
     for s in seasons:
         si = int(s)
         try:
+            # Per-season thresholds are loose enough to catch short WC / SA20
+            # group-stage exits (3 innings) without drowning the board in noise.
             save(f'{dir_}/cais-batting-{si}.json',
-                 serialize(a.cais_batting(min_balls=50, min_runs=75, season=si, competition=code)))
+                 serialize(a.cais_batting(min_balls=40, min_runs=60, season=si, competition=code)))
             save(f'{dir_}/cais-bowling-{si}.json',
-                 serialize(a.cais_bowling(min_balls=30, min_wickets=4, season=si, competition=code)))
+                 serialize(a.cais_bowling(min_balls=24, min_wickets=3, season=si, competition=code)))
             save(f'{dir_}/batting-{si}.json',
-                 serialize(a.batting_averages(min_innings=4, min_runs=75, season=si, competition=code)))
+                 serialize(a.batting_averages(min_innings=3, min_runs=60, season=si, competition=code)))
             save(f'{dir_}/strike-rates-{si}.json',
-                 serialize(a.strike_rate_analysis(min_balls=60, min_runs=75, season=si, competition=code)))
+                 serialize(a.strike_rate_analysis(min_balls=45, min_runs=60, season=si, competition=code)))
             save(f'{dir_}/bowling-{si}.json',
-                 serialize(a.bowling_stats(min_balls=30, min_wickets=4, season=si, competition=code)))
+                 serialize(a.bowling_stats(min_balls=24, min_wickets=3, season=si, competition=code)))
         except Exception as e:
             print(f'  season {si} skipped: {e}')
 
