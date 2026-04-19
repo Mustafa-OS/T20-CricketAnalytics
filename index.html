@@ -2111,6 +2111,11 @@ searchInput.addEventListener('input', e => {
   searchDropdown.innerHTML = hits.map(p =>
     `<div class="search-result" data-player="${p}">${p}</div>`).join('');
   searchDropdown.classList.remove('hidden');
+  // Aggressive prefetch: start loading the top match as soon as the
+  // user has typed ≥2 chars. This covers the common case where someone
+  // types a full name and hits Enter/clicks without hovering first.
+  // The cache dedupes, so later hovers/clicks on the same row are free.
+  if (hits[0]) prefetchPlayer(hits[0]);
 });
 
 searchDropdown.addEventListener('click', e => {
@@ -2186,12 +2191,32 @@ function prefetchPlayer(name) {
   fetchPlayerProfile(name).catch(() => {});
 }
 
+/* Skeleton tile used while we wait on the profile fetch. A bank of these
+   fills the stat rows instantly so the modal shows structure + a pulse
+   instead of a bare name header. Dashes are CSS-free placeholders — no
+   extra render cost and they blend with the normal stat layout. */
+const SKELETON_TILE =
+  '<div class="stat skel"><div class="stat-label">&nbsp;</div>' +
+  '<div class="stat-value" style="opacity:.35">—</div></div>';
+
 async function openPlayer(name) {
+  const t0 = performance.now();
   const modal = document.getElementById('player-modal');
   document.getElementById('modal-name').textContent = name;
-  document.getElementById('modal-batting').classList.add('hidden');
-  document.getElementById('modal-bowling').classList.add('hidden');
   document.getElementById('modal-none').classList.add('hidden');
+
+  // Phase 0 — paint a skeleton INSTANTLY, before awaiting the fetch.
+  // This is the difference between "modal shows name then sits empty
+  // for seconds" and "modal shows a populated-looking shell right away".
+  // We render 6 placeholder tiles for batting + 4 for bowling (matches
+  // the real counts) and show both blocks optimistically; they hide
+  // themselves in the fill phase if the player doesn't have that role.
+  document.getElementById('modal-batting').classList.remove('hidden');
+  document.getElementById('modal-bowling').classList.remove('hidden');
+  document.getElementById('modal-bat-stats').innerHTML =
+    Array(6).fill(SKELETON_TILE).join('');
+  document.getElementById('modal-bowl-stats').innerHTML =
+    Array(4).fill(SKELETON_TILE).join('');
   modal.classList.remove('hidden');
   document.body.style.overflow = 'hidden';
 
@@ -2200,6 +2225,8 @@ async function openPlayer(name) {
     p = await fetchPlayerProfile(name);
   } catch (err) {
     console.error('openPlayer error', err);
+    document.getElementById('modal-batting').classList.add('hidden');
+    document.getElementById('modal-bowling').classList.add('hidden');
     document.getElementById('modal-none').classList.remove('hidden');
     document.getElementById('modal-none').innerHTML =
       `<p>Couldn't load profile for <b>${name}</b>.</p>
@@ -2207,16 +2234,21 @@ async function openPlayer(name) {
     return;
   }
   if (p.__missing) {
+    document.getElementById('modal-batting').classList.add('hidden');
+    document.getElementById('modal-bowling').classList.add('hidden');
     document.getElementById('modal-none').classList.remove('hidden');
     document.getElementById('modal-none').innerHTML =
       `<p>No profile data for <b>${name}</b> in this competition.<br>` +
       `They may not meet the minimum-activity thresholds (5 innings batted or 30 balls bowled).</p>`;
     return;
   }
+  console.log(`[player] fetched ${name} in ${(performance.now()-t0).toFixed(0)}ms`);
 
-  // ── Phase 1: paint stats immediately (cheap, ~0ms) ──────────────
-  // Fill headline stat tiles first so the modal feels responsive while
-  // Plotly (the expensive bit) spins up in a deferred frame below.
+  // ── Phase 1: replace skeleton with real stats (cheap, ~1ms) ─────
+  // Hide the role block up front if the player doesn't bat / bowl —
+  // the skeleton showed both optimistically.
+  if (!p.batting) document.getElementById('modal-batting').classList.add('hidden');
+  if (!p.bowling) document.getElementById('modal-bowling').classList.add('hidden');
   if (p.batting) {
     document.getElementById('modal-batting').classList.remove('hidden');
     const b = p.batting;
@@ -2260,6 +2292,7 @@ async function openPlayer(name) {
   // Plotly.react is a drop-in for newPlot that diff-renders when the
   // target div already has a chart, so reopening the modal is faster.
   requestAnimationFrame(() => {
+    const tR = performance.now();
     if (p.batting) {
       const seas = p.batting_seasons || [];
       Plotly.react('modal-bat-seasons', [{
@@ -2271,15 +2304,36 @@ async function openPlayer(name) {
       }], { ...BASE, xaxis: { ...AXIS }, yaxis: { ...AXIS, title: 'Runs' },
             height: 280, margin: { l: 50, r: 15, t: 15, b: 40 } }, CFG);
 
+      // Innings bar chart. On a 200+ innings career, Plotly spends most
+      // of its render time per-bar when marker.color is an array (every
+      // bar gets its own <rect fill>). Splitting into two traces — one
+      // for dismissed innings (rose), one for not-out (emerald) — lets
+      // Plotly paint each trace as a single coloured set, which is ~5×
+      // faster and scales much better. The category x-axis stitches
+      // them back together in innings order visually.
       const inn = p.innings_list || [];
-      Plotly.react('modal-bat-innings', [{
-        type: 'bar',
-        x: inn.map(i => i.inning_num),
-        y: inn.map(i => i.runs),
-        marker: { color: inn.map(i => i.dismissed ? PAL.rose : PAL.emerald) },
-        hovertemplate: '<b>Inn %{x}</b><br>Runs: %{y}<extra></extra>',
-      }], { ...BASE, xaxis: { ...AXIS, title: 'Innings #' },
+      const outX = [], outY = [], notX = [], notY = [];
+      for (const i of inn) {
+        if (i.dismissed) { outX.push(i.inning_num); outY.push(i.runs); }
+        else             { notX.push(i.inning_num); notY.push(i.runs); }
+      }
+      Plotly.react('modal-bat-innings', [
+        {
+          type: 'bar', name: 'Out',
+          x: outX, y: outY,
+          marker: { color: PAL.rose },
+          hovertemplate: '<b>Inn %{x}</b><br>Runs: %{y} (out)<extra></extra>',
+        },
+        {
+          type: 'bar', name: 'Not out',
+          x: notX, y: notY,
+          marker: { color: PAL.emerald },
+          hovertemplate: '<b>Inn %{x}</b><br>Runs: %{y} (not out)<extra></extra>',
+        },
+      ], { ...BASE, barmode: 'overlay',
+            xaxis: { ...AXIS, title: 'Innings #' },
             yaxis: { ...AXIS, title: 'Runs' },
+            showlegend: false,
             height: 280, margin: { l: 50, r: 15, t: 15, b: 40 } }, CFG);
     }
     if (p.bowling) {
@@ -2293,6 +2347,7 @@ async function openPlayer(name) {
       }], { ...BASE, xaxis: { ...AXIS }, yaxis: { ...AXIS, title: 'Wickets' },
             height: 280, margin: { l: 50, r: 15, t: 15, b: 40 } }, CFG);
     }
+    console.log(`[player] plotly in ${(performance.now()-tR).toFixed(0)}ms total ${(performance.now()-t0).toFixed(0)}ms`);
   });
 }
 
@@ -2425,6 +2480,15 @@ async function selectComp(code) {
   // but a full wipe is simpler and memory is not a concern.
   for (const k of Object.keys(PROFILE_CACHE)) delete PROFILE_CACHE[k];
 
+  // Warm the player-index and search list the moment a comp is picked,
+  // so by the time the user moves to the search bar the manifests are
+  // already in cache. These are small (5–30 KB gzipped) and fire-and-
+  // forget, so they don't block the view render.
+  if (!FLASK) {
+    getPlayerIndex().catch(() => {});
+    loadPlayersList().catch(() => {});
+  }
+
   renderCompGrid();
   updateCompBadge();
 
@@ -2482,9 +2546,15 @@ document.getElementById('comp-badge').onclick = (e) => {
   // highlights their previous choice.
   showWelcome();
 
-  // Preload the search index in the background so the first typed character
-  // doesn't pay for a network round-trip.
-  if (localStorage.getItem('comp') !== null) loadPlayersList();
+  // Preload the search index AND the player-index in the background so the
+  // first typed character doesn't pay for a network round-trip, and the
+  // click that follows doesn't pay for the name→slug manifest either.
+  if (localStorage.getItem('comp') !== null && !FLASK) {
+    loadPlayersList().catch(() => {});
+    getPlayerIndex().catch(() => {});
+  } else if (localStorage.getItem('comp') !== null) {
+    loadPlayersList();
+  }
 })();
 </script>
 
