@@ -100,35 +100,6 @@
       border-color: var(--accent);
     }
 
-    /* WC-only "Test nations only" toggle — appears next to the comp badge. */
-    .wc-toggle {
-      display: none;
-      margin-left: 6px;
-      padding: 4px 10px;
-      font-size: 11px; font-weight: 600;
-      letter-spacing: 0.04em; text-transform: uppercase;
-      color: var(--text-muted);
-      background: transparent;
-      border: 1px solid var(--border);
-      border-radius: 999px;
-      cursor: pointer;
-      transition: all .15s;
-      align-items: center;
-      gap: 6px;
-    }
-    .wc-toggle.visible { display: inline-flex; }
-    .wc-toggle:hover { border-color: var(--accent); color: #fff; }
-    .wc-toggle.on {
-      color: #0b0f18;
-      background: var(--accent);
-      border-color: var(--accent);
-    }
-    .wc-toggle .dot {
-      width: 6px; height: 6px; border-radius: 50%;
-      background: currentColor; opacity: 0.5;
-    }
-    .wc-toggle.on .dot { opacity: 1; }
-
     /* comp picker grid on home */
     .comp-grid {
       display: grid;
@@ -486,6 +457,9 @@
       background: var(--border);
       margin: 0 4px;
     }
+    /* WC-only "Pool" filter sits inline with the rest of the filter bar. */
+    .pool-wrap { display: flex; align-items: center; gap: 10px; }
+    .pool-wrap.hidden { display: none; }
 
     /* CAIS inner tabs (batting / bowling) */
     .sub-tabs {
@@ -829,10 +803,6 @@
     <div class="brand" data-view="home">
       <div class="brand-wordmark">⚡ The T20 <span>Analyst</span></div>
       <button id="comp-badge" class="comp-badge" title="Change competition">—</button>
-      <button id="wc-testonly" class="wc-toggle"
-              title="Show only players from ICC Full-Member nations">
-        <span class="dot"></span>Test nations only
-      </button>
     </div>
 
     <nav class="topnav">
@@ -971,6 +941,15 @@
       <span class="label">Team</span>
       <div id="cais-team-chips" class="chip-group">
         <button class="chip active" data-team="">All</button>
+      </div>
+      <!-- WC-only: filter to ICC Full Members (injected/shown by JS for comp === 'wc') -->
+      <div id="cais-pool-wrap" class="pool-wrap hidden">
+        <div class="chip-divider"></div>
+        <span class="label">Pool</span>
+        <div id="cais-pool-chips" class="chip-group">
+          <button class="chip active" data-pool="all">All teams</button>
+          <button class="chip"        data-pool="test">Test nations only</button>
+        </div>
       </div>
     </div>
 
@@ -1356,30 +1335,18 @@ const CFG = { responsive: true, displayModeBar: false };
 const FLASK = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
 
 /* ICC Full-Member nations (the 12 "Test-playing" countries). Used by the
-   WC-only toggle to filter leaderboards to main-draw Test sides. */
+   CAIS view's WC-only toggle to filter out main-draw associate sides. */
 const TEST_NATIONS = new Set([
   'Afghanistan', 'Australia', 'Bangladesh', 'England', 'India', 'Ireland',
   'New Zealand', 'Pakistan', 'South Africa', 'Sri Lanka', 'West Indies',
   'Zimbabwe',
 ]);
 
-/* Current competition + WC-only test-nations toggle. Both persisted. */
+/* Current competition, persisted. */
 const APP = {
   get comp() { return localStorage.getItem('comp') || 'psl'; },
   set comp(v) { localStorage.setItem('comp', v); },
-  get wcTestOnly() { return localStorage.getItem('wc_test_only') === '1'; },
-  set wcTestOnly(v) { localStorage.setItem('wc_test_only', v ? '1' : '0'); },
 };
-
-/* Drop rows whose team isn't an ICC Full-Member. Only meaningful in WC. */
-function filterTestOnly(rows, teamKey = 'team') {
-  if (!Array.isArray(rows)) return rows;
-  if (!(APP.comp === 'wc' && APP.wcTestOnly)) return rows;
-  return rows.filter(r => {
-    const t = r && r[teamKey];
-    return t && TEST_NATIONS.has(t);
-  });
-}
 
 async function apiGet(ep, query = {}) {
   const q = { ...query, competition: APP.comp };
@@ -1656,8 +1623,17 @@ const caisState = {
   seasons: [],        // empty = career view; otherwise list of selected years
   team: '',
   mode: 'batting',
+  // WC-only: 'all' shows every side in the tournament; 'test' restricts to
+  // ICC Full Members (the 12 "Test-playing" nations). Ignored elsewhere.
+  pool: 'all',
   data: { batting: null, bowling: null },
 };
+
+/* WC-only pool filter. No-op outside the World Cup view. */
+function filterByPool(rows) {
+  if (APP.comp !== 'wc' || caisState.pool !== 'test') return rows;
+  return rows.filter(r => r.team && TEST_NATIONS.has(r.team));
+}
 
 async function fetchCaisData(kind) {
   const data = await apiGetSeasons(`cais/${kind}`, caisState.seasons, MERGE[`cais-${kind}`]);
@@ -1842,9 +1818,9 @@ async function renderCais() {
   const bat  = caisState.data.batting || await fetchCaisData('batting');
   const bowl = caisState.data.bowling || await fetchCaisData('bowling');
 
-  // Team chip first, then WC "Test nations only" toggle.
-  let batFilt  = filterTestOnly(filterByTeam(bat));
-  let bowlFilt = filterTestOnly(filterByTeam(bowl));
+  // Team chip first, then the WC-only pool filter (Test nations only).
+  let batFilt  = filterByPool(filterByTeam(bat));
+  let bowlFilt = filterByPool(filterByTeam(bowl));
   // Re-rank after filtering so the visible list starts at #1.
   batFilt  = batFilt.map((r, i)  => ({ ...r, rank: i + 1 }));
   bowlFilt = bowlFilt.map((r, i) => ({ ...r, rank: i + 1 }));
@@ -1887,6 +1863,23 @@ async function loadCais() {
       renderCais();
     };
   });
+
+  // WC-only "Pool" toggle: show the chip group only on the World Cup view.
+  const poolWrap  = document.getElementById('cais-pool-wrap');
+  const poolChips = document.getElementById('cais-pool-chips');
+  poolWrap.classList.toggle('hidden', APP.comp !== 'wc');
+  if (APP.comp === 'wc') {
+    poolChips.querySelectorAll('.chip').forEach(b => {
+      b.classList.toggle('active', b.dataset.pool === caisState.pool);
+      b.onclick = () => {
+        poolChips.querySelectorAll('.chip').forEach(c => c.classList.remove('active'));
+        b.classList.add('active');
+        caisState.pool = b.dataset.pool;
+        renderCais();
+      };
+    });
+  }
+
   // sub-tabs
   document.querySelectorAll('.sub-tab').forEach(t =>
     t.onclick = () => showCaisPanel(t.dataset.cais));
@@ -1902,9 +1895,6 @@ async function renderBatting() {
     apiGetSeasons('batting',      battingState.seasons, MERGE.batting),
     apiGetSeasons('strike-rates', battingState.seasons, MERGE['strike-rates']),
   ]);
-  // WC-only Test-nations filter.
-  data = filterTestOnly(data);
-  sr   = filterTestOnly(sr);
   // Re-sort merged output by runs / SR respectively.
   if (battingState.seasons.length > 1) {
     data = [...data].sort((a, b) => (b.total_runs ?? 0) - (a.total_runs ?? 0));
@@ -1977,7 +1967,6 @@ async function loadBatting() {
 const bowlingState = { seasons: [] };
 async function renderBowling() {
   let data = await apiGetSeasons('bowling', bowlingState.seasons, MERGE.bowling);
-  data = filterTestOnly(data);
   if (bowlingState.seasons.length > 1) {
     data = [...data].sort((a, b) => (b.wickets ?? 0) - (a.wickets ?? 0));
   }
@@ -2053,17 +2042,12 @@ async function loadBowling() {
    RECORDS VIEW (records + teams + dismissals)
    ══════════════════════════════════════════════════════════ */
 async function loadRecords() {
-  let [scores, cent, teams, dis] = await Promise.all([
+  const [scores, cent, teams, dis] = await Promise.all([
     apiGet('highest-scores'),
     apiGet('centuries'),
     apiGet('teams'),
     apiGet('dismissals'),
   ]);
-
-  // WC-only Test-nations filter.
-  scores = filterTestOnly(scores, 'batting_team');
-  cent   = filterTestOnly(cent);
-  teams  = filterTestOnly(teams);
 
   // Each innings is its own bar — label must be unique (batter + date)
   // to prevent Plotly from stacking duplicate y-labels.
@@ -2304,29 +2288,6 @@ function updateCompBadge() {
   document.getElementById('comp-badge').textContent = label;
   const cta = document.getElementById('cta-comp-name');
   if (cta) cta.textContent = c ? c.name : APP.comp.toUpperCase();
-  // WC-only "Test nations only" toggle: show it only for the WC view,
-  // reflect the current persisted state.
-  const tog = document.getElementById('wc-testonly');
-  if (tog) {
-    tog.classList.toggle('visible', APP.comp === 'wc');
-    tog.classList.toggle('on',      APP.wcTestOnly);
-  }
-}
-
-/* Flip the WC Test-nations filter and re-render the currently visible view. */
-async function toggleWcTestOnly() {
-  APP.wcTestOnly = !APP.wcTestOnly;
-  updateCompBadge();
-  // Invalidate CAIS cache so the re-rank happens cleanly.
-  caisState.data = { batting: null, bowling: null };
-  // Re-run whichever loader is active.
-  const active = document.querySelector('.view.active');
-  const current = active ? active.id.replace('view-', '') : 'home';
-  if (LOADERS[current]) {
-    loaded[current] = false;
-    await LOADERS[current]();
-    loaded[current] = true;
-  }
 }
 
 /* Every Plotly chart we render lives in a known div. Wiping them on
@@ -2371,6 +2332,7 @@ async function selectComp(code) {
   caisState.seasons = [];
   caisState.team = '';
   caisState.mode = 'batting';
+  caisState.pool = 'all';
   caisState.data = { batting: null, bowling: null };
   battingState.seasons = [];
   bowlingState.seasons = [];
@@ -2421,12 +2383,6 @@ document.addEventListener('keydown', e => {
 document.getElementById('comp-badge').onclick = (e) => {
   e.stopPropagation();
   showWelcome();
-};
-
-// WC-only "Test nations only" toggle.
-document.getElementById('wc-testonly').onclick = (e) => {
-  e.stopPropagation();
-  toggleWcTestOnly();
 };
 
 (async () => {
