@@ -546,6 +546,47 @@
     .stat-value.emerald { color: var(--emerald); }
     .stat-value.rose { color: var(--rose); }
 
+    /* Skeleton tiles shown while the player profile is fetching —
+       shimmer over the card body, dashes for label + value. The
+       .loaded flag (toggled when real data arrives) kills the
+       animation instantly so there's no flash mismatch. */
+    @keyframes skel-pulse {
+      0%   { background-position:   0% 50%; }
+      100% { background-position: 200% 50%; }
+    }
+    .stat.skel {
+      background: linear-gradient(90deg,
+        var(--card) 0%, rgba(255,255,255,0.04) 50%, var(--card) 100%);
+      background-size: 200% 100%;
+      animation: skel-pulse 1.1s linear infinite;
+    }
+    .stat.skel .stat-label, .stat.skel .stat-value { opacity: 0.35; }
+
+    /* Chart-area skeleton: a subtle shimmering block placeholder so
+       users see the Plotly slot reserving space while it renders. */
+    .chart-skel {
+      height: 280px;
+      border-radius: var(--radius-sm);
+      background: linear-gradient(90deg,
+        var(--card) 0%, rgba(255,255,255,0.04) 50%, var(--card) 100%);
+      background-size: 200% 100%;
+      animation: skel-pulse 1.1s linear infinite;
+      margin: 14px 0;
+    }
+
+    /* Spinner dot shown next to the modal title while loading. */
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .modal-spinner {
+      display: inline-block;
+      width: 16px; height: 16px;
+      border: 2px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.75s linear infinite;
+      margin-left: 10px;
+      vertical-align: middle;
+    }
+
     /* Leaderboard table */
     .lb {
       width: 100%;
@@ -2138,12 +2179,22 @@ document.addEventListener('click', e => {
   if (!e.target.closest('.search-wrap')) searchDropdown.classList.add('hidden');
 });
 
+/* Resolve a site-relative static/data path into an absolute one. The
+   previous plain-relative form worked in Chrome but produced an odd
+   URL on some WebKit paths (Safari occasionally threw "The string did
+   not match the expected pattern"). Building the path off document.baseURI
+   pins it to the site root regardless of the current doc URL. */
+function staticUrl(path) {
+  const base = new URL('.', document.baseURI).pathname;
+  return `${base}static/data/${path}`;
+}
+
 /* name → slug manifest, cached per competition so we only fetch it once. */
 const PLAYER_INDEX_CACHE = {};
 async function getPlayerIndex() {
   const comp = APP.comp;
   if (!PLAYER_INDEX_CACHE[comp]) {
-    PLAYER_INDEX_CACHE[comp] = fetch(`static/data/${comp}/player-index.json`)
+    PLAYER_INDEX_CACHE[comp] = fetch(staticUrl(`${comp}/player-index.json`))
       .then(r => r.ok ? r.json() : {})
       .catch(() => ({}));
   }
@@ -2164,17 +2215,35 @@ async function fetchPlayerProfile(name) {
 
   const run = async () => {
     if (FLASK) {
-      const r = await fetch(`/api/player/${encodeURIComponent(name)}`);
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      return r.json();
+      const url = `/api/player/${encodeURIComponent(name)}`;
+      try {
+        const r = await fetch(url);
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return await r.json();
+      } catch (e) {
+        throw new Error(`${e.message || e} [url=${url}]`);
+      }
     }
+    const comp = APP.comp;
+    if (!comp) throw new Error('No competition selected');
     const idx = await getPlayerIndex();
     const slug = idx[name];
     if (!slug) return { __missing: true, name };
-    const url = `static/data/${APP.comp}/player/${slug}.json`;
-    const r = await fetch(url);
-    if (!r.ok) throw new Error(`HTTP ${r.status} on ${url}`);
-    return r.json();
+    // Belt-and-braces: reject any slug that somehow contains URL-unsafe
+    // characters before we hand it to fetch(). Safari throws a cryptic
+    // "The string did not match the expected pattern" on invalid URLs,
+    // so we'd rather surface a precise error here.
+    if (typeof slug !== 'string' || !/^[a-z0-9_]+$/.test(slug)) {
+      throw new Error(`Bad slug for ${name}: ${JSON.stringify(slug)}`);
+    }
+    const url = staticUrl(`${comp}/player/${slug}.json`);
+    try {
+      const r = await fetch(url);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return await r.json();
+    } catch (e) {
+      throw new Error(`${e.message || e} [url=${url}]`);
+    }
   };
   const promise = run();
   // Cache the promise immediately so concurrent callers dedupe; on
@@ -2202,7 +2271,12 @@ const SKELETON_TILE =
 async function openPlayer(name) {
   const t0 = performance.now();
   const modal = document.getElementById('player-modal');
-  document.getElementById('modal-name').textContent = name;
+
+  // Name + inline spinner so the user sees motion the moment the modal
+  // opens. The spinner is torn down on success, missing-profile, or
+  // error — all three paths below.
+  document.getElementById('modal-name').innerHTML =
+    `${name}<span class="modal-spinner" id="modal-spinner" aria-label="loading"></span>`;
   document.getElementById('modal-none').classList.add('hidden');
 
   // Phase 0 — paint a skeleton INSTANTLY, before awaiting the fetch.
@@ -2217,14 +2291,26 @@ async function openPlayer(name) {
     Array(6).fill(SKELETON_TILE).join('');
   document.getElementById('modal-bowl-stats').innerHTML =
     Array(4).fill(SKELETON_TILE).join('');
+  // Chart slots get a shimmering placeholder block until Plotly renders
+  // over them — same perception trick as the stat tiles.
+  const skelChart = '<div class="chart-skel"></div>';
+  document.getElementById('modal-bat-seasons').innerHTML = skelChart;
+  document.getElementById('modal-bat-innings').innerHTML = skelChart;
+  document.getElementById('modal-bowl-seasons').innerHTML = skelChart;
   modal.classList.remove('hidden');
   document.body.style.overflow = 'hidden';
+
+  const clearSpinner = () => {
+    const s = document.getElementById('modal-spinner');
+    if (s) s.remove();
+  };
 
   let p;
   try {
     p = await fetchPlayerProfile(name);
   } catch (err) {
     console.error('openPlayer error', err);
+    clearSpinner();
     document.getElementById('modal-batting').classList.add('hidden');
     document.getElementById('modal-bowling').classList.add('hidden');
     document.getElementById('modal-none').classList.remove('hidden');
@@ -2234,6 +2320,7 @@ async function openPlayer(name) {
     return;
   }
   if (p.__missing) {
+    clearSpinner();
     document.getElementById('modal-batting').classList.add('hidden');
     document.getElementById('modal-bowling').classList.add('hidden');
     document.getElementById('modal-none').classList.remove('hidden');
@@ -2242,6 +2329,7 @@ async function openPlayer(name) {
       `They may not meet the minimum-activity thresholds (5 innings batted or 30 balls bowled).</p>`;
     return;
   }
+  clearSpinner();
   console.log(`[player] fetched ${name} in ${(performance.now()-t0).toFixed(0)}ms`);
 
   // ── Phase 1: replace skeleton with real stats (cheap, ~1ms) ─────
