@@ -2151,7 +2151,9 @@ async function openPlayer(name) {
   let p;
   try {
     if (FLASK) {
-      p = await fetch(`/api/player/${encodeURIComponent(name)}`).then(r => r.json());
+      const r = await fetch(`/api/player/${encodeURIComponent(name)}`);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      p = await r.json();
     } else {
       const idx = await getPlayerIndex();
       const slug = idx[name];
@@ -2162,12 +2164,17 @@ async function openPlayer(name) {
           `They may not meet the minimum-activity thresholds (5 innings batted or 30 balls bowled).</p>`;
         return;
       }
-      p = await fetch(`static/data/${APP.comp}/player/${slug}.json`).then(r => r.json());
+      const url = `static/data/${APP.comp}/player/${slug}.json`;
+      const r = await fetch(url);
+      if (!r.ok) throw new Error(`HTTP ${r.status} on ${url}`);
+      p = await r.json();
     }
   } catch (err) {
+    console.error('openPlayer error', err);
     document.getElementById('modal-none').classList.remove('hidden');
     document.getElementById('modal-none').innerHTML =
-      `<p>Couldn't load profile for <b>${name}</b>.</p>`;
+      `<p>Couldn't load profile for <b>${name}</b>.</p>
+       <p style="font-size:12px;color:var(--text-soft);margin-top:8px">${err.message || err}</p>`;
     return;
   }
 
