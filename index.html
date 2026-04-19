@@ -2125,6 +2125,18 @@ document.addEventListener('click', e => {
   if (!e.target.closest('.search-wrap')) searchDropdown.classList.add('hidden');
 });
 
+/* name → slug manifest, cached per competition so we only fetch it once. */
+const PLAYER_INDEX_CACHE = {};
+async function getPlayerIndex() {
+  const comp = APP.comp;
+  if (!PLAYER_INDEX_CACHE[comp]) {
+    PLAYER_INDEX_CACHE[comp] = fetch(`static/data/${comp}/player-index.json`)
+      .then(r => r.ok ? r.json() : {})
+      .catch(() => ({}));
+  }
+  return PLAYER_INDEX_CACHE[comp];
+}
+
 async function openPlayer(name) {
   const modal = document.getElementById('player-modal');
   document.getElementById('modal-name').textContent = name;
@@ -2134,16 +2146,30 @@ async function openPlayer(name) {
   modal.classList.remove('hidden');
   document.body.style.overflow = 'hidden';
 
-  // Player profile requires Flask. In static mode, show a helpful note.
-  if (!FLASK) {
+  // Flask path hits the live API; static/Pages path hits the prebuilt
+  // per-player JSON (keyed by slug via the comp's player-index.json).
+  let p;
+  try {
+    if (FLASK) {
+      p = await fetch(`/api/player/${encodeURIComponent(name)}`).then(r => r.json());
+    } else {
+      const idx = await getPlayerIndex();
+      const slug = idx[name];
+      if (!slug) {
+        document.getElementById('modal-none').classList.remove('hidden');
+        document.getElementById('modal-none').innerHTML =
+          `<p>No profile data for <b>${name}</b> in this competition.<br>` +
+          `They may not meet the minimum-activity thresholds (5 innings batted or 30 balls bowled).</p>`;
+        return;
+      }
+      p = await fetch(`static/data/${APP.comp}/player/${slug}.json`).then(r => r.json());
+    }
+  } catch (err) {
     document.getElementById('modal-none').classList.remove('hidden');
     document.getElementById('modal-none').innerHTML =
-      '<p>Player profiles need the Flask server (<code>python app.py</code>).<br>' +
-      'On GitHub Pages, browse the aggregate leaderboards instead.</p>';
+      `<p>Couldn't load profile for <b>${name}</b>.</p>`;
     return;
   }
-
-  const p = await fetch(`/api/player/${encodeURIComponent(name)}`).then(r => r.json());
 
   if (p.batting) {
     document.getElementById('modal-batting').classList.remove('hidden');
@@ -2391,13 +2417,15 @@ document.getElementById('comp-badge').onclick = (e) => {
   updateCompBadge();
   loaded['home'] = true;
 
-  // First visit? Block the app with the welcome modal until they pick.
-  if (localStorage.getItem('comp') === null) {
-    showWelcome();
-  } else {
-    // Returning user — quietly preload the search index in the background.
-    loadPlayersList();
-  }
+  // The competition picker is the app's front door — it greets every visitor
+  // on every load, not just the first one. Returning users still have their
+  // last pick in localStorage, so the close button is visible and the grid
+  // highlights their previous choice.
+  showWelcome();
+
+  // Preload the search index in the background so the first typed character
+  // doesn't pay for a network round-trip.
+  if (localStorage.getItem('comp') !== null) loadPlayersList();
 })();
 </script>
 
