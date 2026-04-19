@@ -56,6 +56,17 @@ class CricketAnalyser:
                 print(f'[CricketAnalyser] parquet cache skipped: {e}')
 
         self.default_comp = competition
+
+        # ── Back-compat shim ─────────────────────────────────────────────
+        # Older cached parquet/CSV files predate the ingest-side audit that
+        # introduced is_bowler_wicket, bowler_runs and legal_delivery. If
+        # any of those columns are missing we synthesise them on self.df
+        # here so every downstream aggregation still works (super-over rows
+        # can't be recovered post-hoc — re-run ingest.py for those).
+        self._ensure_audit_columns(self.df)
+
+        # self.legal is derived AFTER audit columns are populated, so it
+        # inherits them.
         self.legal = self.df[self.df["extras_type"] != 'wides'].copy()
 
         # Per-competition memoization of expensive derived tables.
@@ -63,6 +74,43 @@ class CricketAnalyser:
         self._form_cache     = {}
         self._tier_cache     = {}
         self._role_cache     = {}
+
+    # Dismissal kinds Cricinfo credits to the bowler. Anything outside this
+    # set (run out, retired hurt/out, obstructing the field, timed out, hit
+    # the ball twice) is a team dismissal but NOT a bowler wicket.
+    _BOWLER_CREDITED_KINDS = {
+        'bowled', 'caught', 'caught and bowled', 'lbw', 'stumped', 'hit wicket',
+    }
+
+    @classmethod
+    def _ensure_audit_columns(cls, df: pd.DataFrame) -> None:
+        """Populate is_bowler_wicket / bowler_runs / legal_delivery if the
+        source frame doesn't already have them (older cache files)."""
+        if df is None or len(df) == 0:
+            return
+        if 'is_bowler_wicket' not in df.columns:
+            kind = df.get('dismissal_kind')
+            if kind is not None:
+                kind_lc = kind.astype('string').str.lower()
+                df['is_bowler_wicket'] = df['is_wicket'].astype(bool) & kind_lc.isin(cls._BOWLER_CREDITED_KINDS)
+            else:
+                df['is_bowler_wicket'] = df['is_wicket'].astype(bool)
+        if 'bowler_runs' not in df.columns:
+            extras_type = df.get('extras_type')
+            if extras_type is not None:
+                bowler_extra_mask = extras_type.isin(['wides', 'noballs'])
+                df['bowler_runs'] = (
+                    df['batsman_runs']
+                    + df['extra_runs'].where(bowler_extra_mask, 0)
+                ).astype(int)
+            else:
+                df['bowler_runs'] = df['batsman_runs']
+        if 'legal_delivery' not in df.columns:
+            extras_type = df.get('extras_type')
+            if extras_type is not None:
+                df['legal_delivery'] = ~extras_type.isin(['wides', 'noballs'])
+            else:
+                df['legal_delivery'] = True
 
     @classmethod
     def _apply_test_nations_filter(cls, df: pd.DataFrame) -> pd.DataFrame:
@@ -134,20 +182,28 @@ class CricketAnalyser:
         return highest.reset_index(drop=True)
     
     def bowling_stats(self, min_balls=30, season=None, min_wickets=10, competition=None):
-        """Calculate bowling statistics"""
+        """Bowling stats using Cricinfo-correct attribution:
+        - wickets: only bowler-credited dismissals (no run-outs etc.)
+        - runs_conceded: batter runs + wides + no-balls (excludes byes/legbyes)
+        - overs: legal deliveries / 6 (excludes both wides AND no-balls)
+        """
         legal = self._scope(season, competition)
         legal_balls = legal[legal['bowler'].notna()]
 
-        stats = legal_balls.groupby('bowler').agg({
-            'total_runs': 'sum',
-            'is_wicket': 'sum',
-            'match_id': 'nunique',
-            'id': 'count'  # total balls
-        }).reset_index()
-        stats.columns = ['bowler', 'runs_conceded', 'wickets', 'matches', 'balls']
+        stats = legal_balls.groupby('bowler').agg(
+            runs_conceded=('bowler_runs',      'sum'),
+            wickets=      ('is_bowler_wicket', 'sum'),
+            matches=      ('match_id',         'nunique'),
+            balls_total=  ('id',               'count'),
+            legal_balls=  ('legal_delivery',   'sum'),
+        ).reset_index()
 
-        stats['economy'] = (stats['runs_conceded'] / (stats['balls'] / 6)).round(2)
-        stats['avg'] = (stats['runs_conceded'] / (stats['wickets'] + 0.001)).round(2)
+        overs = stats['legal_balls'] / 6
+        stats['economy'] = (stats['runs_conceded'] / overs).round(2)
+        stats['avg']     = (stats['runs_conceded'] / (stats['wickets'] + 0.001)).round(2)
+        # Expose `balls` as the legal-ball count (what overs are derived from)
+        # — this is what Cricinfo's "Balls" column means on a bowling record.
+        stats['balls']   = stats['legal_balls'].astype(int)
 
         # Primary team per bowler (most frequent) — lets the client filter
         # e.g. to Test-playing nations in the WC view.
@@ -215,12 +271,11 @@ class CricketAnalyser:
         
         if bowler:
             legal_balls = self.legal[self.legal['bowler'].notna()]
-            data = legal_balls[legal_balls['bowler'] == bowler].groupby('season').agg({
-                'total_runs': 'sum',
-                'is_wicket': 'sum',
-                'id': 'count'
-            }).reset_index()
-            data.columns = ['season', 'runs', 'wickets', 'balls']
+            data = legal_balls[legal_balls['bowler'] == bowler].groupby('season').agg(
+                runs=   ('bowler_runs',      'sum'),
+                wickets=('is_bowler_wicket', 'sum'),
+                balls=  ('legal_delivery',   'sum'),
+            ).reset_index()
             data['economy'] = (data['runs'] / (data['balls'] / 6)).round(2)
             return data.sort_values('season')
     
@@ -231,12 +286,16 @@ class CricketAnalyser:
         if len(h2h) == 0:
             return None
         
+        # Dismissals in a batter-vs-bowler matchup count only when the
+        # bowler is credited (run-outs don't count as "bowler dismissed
+        # batter").
+        bowler_dism = int(h2h['is_bowler_wicket'].sum())
         stats = {
             'balls_faced': len(h2h),
             'runs_scored': h2h['batsman_runs'].sum(),
-            'dismissals': h2h['is_wicket'].sum(),
+            'dismissals':  bowler_dism,
             'sr': (h2h['batsman_runs'].sum() / len(h2h) * 100),
-            'avg': (h2h['batsman_runs'].sum() / (h2h['is_wicket'].sum() + 0.001))
+            'avg': (h2h['batsman_runs'].sum() / (bowler_dism + 0.001)),
         }
         return {k: round(v, 2) for k, v in stats.items()}
     
@@ -347,24 +406,24 @@ class CricketAnalyser:
         # ── Bowling ──────────────────────────────────────────────────────
         bowl = scope[scope['bowler'] == name]
         if len(bowl) >= 30:
-            runs_c  = int(bowl['total_runs'].sum())
-            wickets = int(bowl['is_wicket'].sum())
-            balls   = len(bowl)
+            runs_c       = int(bowl['bowler_runs'].sum())
+            wickets      = int(bowl['is_bowler_wicket'].sum())
+            legal_balls  = int(bowl['legal_delivery'].sum())
 
             result['bowling'] = {
                 'wickets':       wickets,
                 'matches':       int(bowl['match_id'].nunique()),
-                'balls':         balls,
+                'balls':         legal_balls,
                 'runs_conceded': runs_c,
-                'economy':       round(runs_c / (balls / 6), 2) if balls else None,
+                'economy':       round(runs_c / (legal_balls / 6), 2) if legal_balls else None,
                 'average':       round(runs_c / wickets, 2) if wickets else None,
             }
 
             bseas = (bowl.groupby('season')
-                         .agg(runs=('total_runs', 'sum'),
-                              wickets=('is_wicket', 'sum'),
-                              balls=('id', 'count'),
-                              matches=('match_id', 'nunique'))
+                         .agg(runs=   ('bowler_runs',      'sum'),
+                              wickets=('is_bowler_wicket', 'sum'),
+                              balls=  ('legal_delivery',   'sum'),
+                              matches=('match_id',         'nunique'))
                          .reset_index())
             bseas['economy'] = (bseas['runs'] / (bseas['balls'] / 6)).round(2)
             result['bowling_seasons'] = bseas.to_dict(orient='records')
@@ -434,8 +493,8 @@ class CricketAnalyser:
         batting['sr'] = (batting['runs'] / batting['balls'] * 100).round(2)
 
         bowling = (data.groupby(['bowling_team', 'phase'])
-                       .agg(runs=('total_runs', 'sum'),
-                            balls=('id', 'count'))
+                       .agg(runs=('bowler_runs',    'sum'),
+                            balls=('legal_delivery', 'sum'))
                        .reset_index())
         bowling['economy'] = (bowling['runs'] / (bowling['balls'] / 6)).round(2)
 
@@ -457,7 +516,9 @@ class CricketAnalyser:
         ].groupby(['batter', 'bowler'])
          .agg(runs=('batsman_runs', 'sum'),
               balls=('id', 'count'),
-              dismissals=('is_wicket', 'sum'))
+              # Matchup dismissals count only when the bowler is credited
+              # (run-outs don't count as "bowler dismissed batter" in H2H).
+              dismissals=('is_bowler_wicket', 'sum'))
          .reset_index())
 
         h2h = h2h[h2h['balls'] >= min_balls].copy()
@@ -877,19 +938,19 @@ class CricketAnalyser:
                * data['bowl_opponent_mult']
         )
         data['_run_cost'] = (
-            data['total_runs']
+            data['bowler_runs']
             * data['phase_bowl_weight']
             * 0.5
             * data['stage_mult']
             * data['bowl_opponent_mult']
         )
-        data['_ball_score'] = data['is_wicket'] * data['_wicket_value'] - data['_run_cost']
+        data['_ball_score'] = data['is_bowler_wicket'] * data['_wicket_value'] - data['_run_cost']
 
         # ── Control-panel helper columns (phase_role and phase_bowl_weight
         # stripped out so frontend sliders can replace them). At default
         # slider values, the client formula reproduces _ball_score exactly.
         data['_wicket_impact'] = (
-            data['is_wicket']
+            data['is_bowler_wicket']
             * data['_tier']
             * data['_form']
             * data['pressure']
@@ -899,7 +960,7 @@ class CricketAnalyser:
             * data['bowl_opponent_mult']
         )
         data['_run_cost_base'] = (
-            data['total_runs']
+            data['bowler_runs']
             * data['stage_mult']
             * data['bowl_opponent_mult']
         )
@@ -909,9 +970,10 @@ class CricketAnalyser:
         for bowler, grp in data.groupby('bowler'):
             if len(grp) < min_balls:
                 continue
-            if int(grp['is_wicket'].sum()) < min_wickets:
+            if int(grp['is_bowler_wicket'].sum()) < min_wickets:
                 continue
-            overs = len(grp) / 6
+            legal_balls = int(grp['legal_delivery'].sum())
+            overs       = legal_balls / 6 if legal_balls else (len(grp) / 6)
             primary_team = (grp['bowling_team'].value_counts().index[0]
                             if len(grp['bowling_team'].dropna()) else None)
 
@@ -923,17 +985,19 @@ class CricketAnalyser:
                 s = by_phase[col].sum()
                 return int(s.get(p, 0))
             def _phase_balls(p):
-                return int(by_phase.size().get(p, 0))
+                # Legal-ball count per phase (excludes wides + no-balls).
+                s = by_phase['legal_delivery'].sum()
+                return int(s.get(p, 0))
 
             rows.append({
                 'bowler':   bowler,
                 'team':     primary_team,
                 'role':     roles.get(bowler, 'pace'),
                 'cais':     round(float(grp['_ball_score'].sum() / overs), 2),
-                'wickets':  int(grp['is_wicket'].sum()),
-                'runs_conceded': int(grp['total_runs'].sum()),
-                'economy':  round(float(grp['total_runs'].sum() / overs), 2),
-                'balls':    int(len(grp)),
+                'wickets':  int(grp['is_bowler_wicket'].sum()),
+                'runs_conceded': int(grp['bowler_runs'].sum()),
+                'economy':  round(float(grp['bowler_runs'].sum() / overs), 2),
+                'balls':    legal_balls,
                 'matches':  int(grp['match_id'].nunique()),
                 # Breakdown buckets — one set per phase.
                 # Control-panel formula at default weights (see
@@ -942,9 +1006,9 @@ class CricketAnalyser:
                 'balls_pp':        _phase_balls('powerplay'),
                 'balls_mid':       _phase_balls('middle'),
                 'balls_death':     _phase_balls('death'),
-                'wickets_pp':      _phase_int_sum('is_wicket', 'powerplay'),
-                'wickets_mid':     _phase_int_sum('is_wicket', 'middle'),
-                'wickets_death':   _phase_int_sum('is_wicket', 'death'),
+                'wickets_pp':      _phase_int_sum('is_bowler_wicket', 'powerplay'),
+                'wickets_mid':     _phase_int_sum('is_bowler_wicket', 'middle'),
+                'wickets_death':   _phase_int_sum('is_bowler_wicket', 'death'),
                 'wicket_impact_pp':    round(_phase_sum('_wicket_impact', 'powerplay'),   4),
                 'wicket_impact_mid':   round(_phase_sum('_wicket_impact', 'middle'),      4),
                 'wicket_impact_death': round(_phase_sum('_wicket_impact', 'death'),       4),

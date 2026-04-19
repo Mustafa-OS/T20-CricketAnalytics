@@ -66,6 +66,15 @@ jobs:
       - name: Rebuild static JSONs
         run: python precompute.py
 
+      # Accuracy gate — cross-check the freshly-computed leader-boards against
+      # hard-coded reference values (Orange/Purple Caps, PSL season leaders,
+      # T20 WC top scorers). In --strict mode the run exits 2 on any delta
+      # above tolerance or unresolved name mismatch, which fails the job
+      # before the commit+push step, so bad data never reaches the live site.
+      # Full report is always printed to the action log for post-mortem.
+      - name: Audit leader-boards against reference values
+        run: python audit.py --strict
+
       - name: Commit and push if JSONs changed
         run: |
           git config user.name  "github-actions[bot]"

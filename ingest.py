@@ -25,6 +25,15 @@ import pandas as pd
 
 # ── Competition catalogue ────────────────────────────────────────────────
 # code: (display name, cricsheet zip filename, include_by_default)
+#
+# Cricsheet data-source caveat (read before auditing numbers):
+#   Cricsheet withholds every match involving Afghanistan (men's team) plus
+#   the entire Afghanistan Premier League — a deliberate publisher policy,
+#   not a bug. 329 matches are missing across all formats, including all
+#   World Cup games where Afghanistan was a participant. Rashid Khan,
+#   Mohammad Nabi, Rahmanullah Gurbaz etc. will therefore show short of
+#   Cricinfo/ICC totals for any period that includes those fixtures.
+#   See: https://cricsheet.org/article/explanation-for-withholding-of-afghanistani-matches/
 COMPS = {
     'psl':   ('Pakistan Super League',     'psl_male_csv2.zip',  True),
     'ipl':   ('Indian Premier League',     'ipl_male_csv2.zip',  True),
@@ -63,6 +72,69 @@ def filter_test_nations(df: pd.DataFrame) -> pd.DataFrame:
         return df
     mask = df['batting_team'].isin(TEST_NATIONS) & df['bowling_team'].isin(TEST_NATIONS)
     return df[mask].copy()
+
+
+# ── Dismissal kinds that credit the bowler. Cricsheet stores lowercase
+# strings; everything NOT in this set (run out, retired hurt/out, obstructing
+# the field, timed out, hit the ball twice, etc.) is a batter-attributed
+# dismissal that Cricinfo does NOT count toward the bowler's wicket tally.
+BOWLER_CREDITED_KINDS = {
+    'bowled', 'caught', 'caught and bowled', 'lbw', 'stumped', 'hit wicket',
+}
+
+# Extras that are charged to the bowler for economy-rate purposes. Wides and
+# no-balls count against the bowler; byes, leg-byes and penalty runs are
+# team-side extras that Cricinfo does NOT add to the bowler's conceded runs.
+BOWLER_CHARGED_EXTRAS = {'wides', 'noballs'}
+
+# Extras that are NOT a legal ball (don't advance the over count). Byes and
+# leg-byes ARE legal balls; only wides and no-balls aren't. This matters for
+# economy rate, which divides conceded runs by overs = legal_balls / 6.
+ILLEGAL_BALL_EXTRAS = {'wides', 'noballs'}
+
+
+# ── Team alias map. Cricket franchises periodically rebrand while keeping
+# the same ownership, home venue, player pool and league history — but
+# Cricsheet stores the contemporaneous name, so the same franchise appears
+# under multiple labels across seasons. We normalise to the current name so
+# team-level aggregation (win-rate, "primary team", franchise records) sees
+# one continuous history rather than two half-franchises.
+#
+# POLICY: only merge unambiguous continuous-franchise rebrands. Defunct
+# franchises (Kochi Tuskers, Pune Warriors, Antigua Hawksbills, Gujarat
+# Lions) keep their own name because there IS no current continuation.
+# Short-lived BPL/LPL franchises change so frequently that normalising them
+# would require ownership-level research per edition — out of scope here.
+TEAM_ALIASES = {
+    # ── IPL ───────────────────────────────────────────────────────────
+    # Same ownership, same venue, just rebranded:
+    'Royal Challengers Bangalore':  'Royal Challengers Bengaluru',  # 2024 rebrand
+    'Kings XI Punjab':              'Punjab Kings',                 # 2021 rebrand
+    'Delhi Daredevils':             'Delhi Capitals',               # 2019 rebrand
+    # Cricsheet data has both spellings for the 2016–17 franchise:
+    'Rising Pune Supergiants':      'Rising Pune Supergiant',
+
+    # ── CPL ───────────────────────────────────────────────────────────
+    # Trinidad franchise sold to the Knight Riders group in 2015 and renamed:
+    'Trinidad & Tobago Red Steel':  'Trinbago Knight Riders',
+    # Barbados franchise rebranded under Royals ownership in 2021:
+    'Barbados Tridents':            'Barbados Royals',
+    # Saint Lucia's CPL slot: Zouks → Stars (2017 one-off) → Zouks → Kings.
+    # CPL's own historical records treat these as one continuous franchise.
+    'St Lucia Zouks':               'Saint Lucia Kings',
+    'St Lucia Stars':               'Saint Lucia Kings',
+    'St Lucia Kings':               'Saint Lucia Kings',
+}
+
+
+def normalise_teams(df: pd.DataFrame) -> pd.DataFrame:
+    """Apply TEAM_ALIASES to batting_team / bowling_team / winner columns."""
+    if df is None or df.empty:
+        return df
+    for col in ('batting_team', 'bowling_team', 'winner'):
+        if col in df.columns:
+            df[col] = df[col].replace(TEAM_ALIASES)
+    return df
 
 
 # ── Download helpers ────────────────────────────────────────────────────
@@ -186,6 +258,12 @@ def convert_zip(zip_path: Path, comp_code: str) -> pd.DataFrame:
     balls['over'] = over_ball.apply(lambda t: t[0])
     balls['ball_n'] = over_ball.apply(lambda t: t[1])
 
+    batsman_runs = pd.to_numeric(balls['runs_off_bat'], errors='coerce').fillna(0).astype(int)
+    extra_runs   = pd.to_numeric(balls['extras'],       errors='coerce').fillna(0).astype(int)
+    extras_type  = balls.apply(_pick_extra, axis=1)
+    dismissal    = balls.get('wicket_type')
+    is_wicket    = dismissal.notna() & (dismissal != '') if dismissal is not None else pd.Series(False, index=balls.index)
+
     out = pd.DataFrame({
         'id':              range(1, len(balls) + 1),
         'match_id':        balls['match_id'],
@@ -200,19 +278,58 @@ def convert_zip(zip_path: Path, comp_code: str) -> pd.DataFrame:
         'batter':          balls['striker'],
         'bowler':          balls['bowler'],
         'non_striker':     balls['non_striker'],
-        'batsman_runs':    pd.to_numeric(balls['runs_off_bat'], errors='coerce').fillna(0).astype(int),
-        'extra_runs':      pd.to_numeric(balls['extras'],       errors='coerce').fillna(0).astype(int),
-        'total_runs':      (pd.to_numeric(balls['runs_off_bat'], errors='coerce').fillna(0)
-                          + pd.to_numeric(balls['extras'],       errors='coerce').fillna(0)).astype(int),
-        'extras_type':     balls.apply(_pick_extra, axis=1),
-        'is_wicket':       balls['wicket_type'].notna() & (balls['wicket_type'] != ''),
+        'batsman_runs':    batsman_runs,
+        'extra_runs':      extra_runs,
+        'total_runs':      (batsman_runs + extra_runs).astype(int),
+        'extras_type':     extras_type,
+        'is_wicket':       is_wicket,
         'player_dismissed':balls.get('player_dismissed'),
-        'dismissal_kind':  balls.get('wicket_type'),
+        'dismissal_kind':  dismissal,
         'fielder':         None,
     })
 
+    # ── Wicket attribution ──
+    # is_bowler_wicket: True only for dismissals that Cricinfo credits to the
+    # bowler (bowled / caught / caught & bowled / lbw / stumped / hit wicket).
+    # Run-outs, retired-hurt/out, obstructing the field, timed out, etc. are
+    # wickets for the fielding side but NOT for the bowler's tally.
+    kind_lc = out['dismissal_kind'].astype('string').str.lower()
+    out['is_bowler_wicket'] = out['is_wicket'] & kind_lc.isin(BOWLER_CREDITED_KINDS)
+
+    # ── Economy attribution ──
+    # bowler_runs: runs charged to the bowler for economy/average calculations.
+    # Includes batter's runs off the bat, plus wides and no-balls (bowler's
+    # fault). Excludes byes, leg-byes and penalty runs — those are team-side
+    # extras Cricinfo doesn't add to the bowler's conceded column.
+    bowler_extra_mask = out['extras_type'].isin(BOWLER_CHARGED_EXTRAS)
+    out['bowler_runs'] = (
+        out['batsman_runs']
+        + out['extra_runs'].where(bowler_extra_mask, 0)
+    ).astype(int)
+
+    # legal_delivery: True if the ball counts toward the six-legal-balls-per-
+    # over rule (everything except wides and no-balls). Used as the denominator
+    # for economy rate — overs = sum(legal_delivery) / 6.
+    out['legal_delivery'] = ~out['extras_type'].isin(ILLEGAL_BALL_EXTRAS)
+
+    # ── Super-over exclusion ──
+    # Cricsheet emits super-over deliveries as innings 3/4 (and 5/6 on the
+    # rare double-super-over). Cricinfo does NOT count super-over runs or
+    # wickets toward career totals, so we drop them at ingest time. Dropped
+    # volume is tiny (≈600 balls across all leagues) but it closes a real
+    # gap against the official numbers.
+    super_over_mask = pd.to_numeric(out['inning'], errors='coerce') > 2
+    so_balls = int(super_over_mask.sum())
+    if so_balls:
+        out = out.loc[~super_over_mask].reset_index(drop=True)
+        out['id'] = range(1, len(out) + 1)
+
+    # ── Team-name normalisation ──
+    out = normalise_teams(out)
+
     # merge match metadata
     if not meta.empty:
+        meta = normalise_teams(meta)  # apply aliases to 'winner' too
         out = out.merge(
             meta[['match_id','winner','win_by','match_type',
                   'player_of_match','umpire_1','umpire_2','event']],
@@ -223,6 +340,8 @@ def convert_zip(zip_path: Path, comp_code: str) -> pd.DataFrame:
             out[c] = None
 
     out['competition'] = comp_code
+    if so_balls:
+        print(f'    ↳ dropped {so_balls} super-over balls')
     return out
 
 

@@ -185,24 +185,27 @@ def build_player_profiles(a: CricketAnalyser, code: str):
         # ── Bowling block ─────────────────────────────────────────────
         bowl = bowl_groups.get(name)
         if bowl is not None and len(bowl) >= 30:
-            runs_c  = int(bowl['total_runs'].sum())
-            wickets = int(bowl['is_wicket'].sum())
-            balls   = len(bowl)
+            # Cricinfo-correct attribution: bowler_runs excludes byes/legbyes/
+            # penalty; is_bowler_wicket excludes run-outs and retired-outs;
+            # legal_delivery excludes wides and no-balls from the over count.
+            runs_c       = int(bowl['bowler_runs'].sum())
+            wickets      = int(bowl['is_bowler_wicket'].sum())
+            legal_balls  = int(bowl['legal_delivery'].sum())
 
             profile['bowling'] = {
                 'wickets':       wickets,
                 'matches':       int(bowl['match_id'].nunique()),
-                'balls':         balls,
+                'balls':         legal_balls,
                 'runs_conceded': runs_c,
-                'economy':       round(runs_c / (balls / 6), 2) if balls else None,
+                'economy':       round(runs_c / (legal_balls / 6), 2) if legal_balls else None,
                 'average':       round(runs_c / wickets, 2) if wickets else None,
             }
 
             bseas = (bowl.groupby('season')
-                         .agg(runs=('total_runs', 'sum'),
-                              wickets=('is_wicket', 'sum'),
-                              balls=('id', 'count'),
-                              matches=('match_id', 'nunique'))
+                         .agg(runs=   ('bowler_runs',      'sum'),
+                              wickets=('is_bowler_wicket', 'sum'),
+                              balls=  ('legal_delivery',   'sum'),
+                              matches=('match_id',         'nunique'))
                          .reset_index())
             bseas['economy'] = (bseas['runs'] / (bseas['balls'] / 6)).round(2)
             profile['bowling_seasons'] = bseas.to_dict(orient='records')

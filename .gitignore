@@ -14,3 +14,6 @@ data/*.parquet
 
 # Word doc backup
 ~$*.docx
+
+# Claude Code session scratch
+.claude/
