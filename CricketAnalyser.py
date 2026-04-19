@@ -642,9 +642,18 @@ class CricketAnalyser:
         #   Semi / Qualifier  → 1.20  (rank 1-3, within 7 days of final)
         #   Quarter / bubble  → 1.10  (rank 4-5, within 10 days of final)
         #   Group stage       → 1.00
+        #
+        # Skipped for competitions without a knockout structure (t20is is a
+        # rolling pool of bilaterals — the last match of a calendar year is
+        # not a "final" in any meaningful sense).
+        STAGE_COMPS = {
+            'psl', 'ipl', 'bbl', 'cpl', 'ntb', 'hnd', 'sa20',
+            'ilt', 'mlc', 'lpl', 'bpl', 'wc',
+        }
         data['stage_mult'] = 1.0
         if {'date', 'competition', 'season'}.issubset(data.columns):
-            mm = (data.groupby('match_id')
+            mm = (data[data['competition'].isin(STAGE_COMPS)]
+                      .groupby('match_id')
                       .agg(_comp=('competition', 'first'),
                            _season=('season', 'first'),
                            _mdate=('date', 'min'))
@@ -674,8 +683,17 @@ class CricketAnalyser:
             mm.loc[mask_sf, 'stage_mult'] = 1.20
             # Final: rank 0
             mm.loc[mm['_rank'] == 0, 'stage_mult'] = 1.30
-            stage_map = dict(zip(mm['match_id'], mm['stage_mult']))
-            data['stage_mult'] = data['match_id'].map(stage_map).fillna(1.0)
+            # Key by (competition, match_id) — WC matches also appear inside
+            # the raw t20is frame under the same match_id, and we don't want
+            # those knockout bumps bleeding into the bilaterals view.
+            stage_map = {
+                (c, m): v for c, m, v in
+                zip(mm['_comp'], mm['match_id'], mm['stage_mult'])
+            }
+            keys = list(zip(data['competition'], data['match_id']))
+            data['stage_mult'] = pd.Series(
+                [stage_map.get(k, 1.0) for k in keys], index=data.index
+            )
 
         # ── Opponent-quality multiplier (WC main draw only).
         # In the WC, the main tournament mixes Full-Members with qualified
