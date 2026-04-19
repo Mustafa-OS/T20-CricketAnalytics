@@ -116,6 +116,100 @@
     }
     .updated-badge:empty { display: none; }
 
+    /* Manual-refresh button — sits next to the freshness badge. Clicking it
+       opens a modal that dispatches the refresh.yml workflow via the GitHub
+       REST API (owner's PAT). Visible to everyone but only fires for someone
+       with a valid `workflow`-scoped token, so public visitors can see it
+       without being able to actually trigger a run. */
+    .refresh-btn {
+      margin-left: 6px;
+      width: 24px; height: 24px;
+      display: inline-flex; align-items: center; justify-content: center;
+      padding: 0;
+      background: transparent;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      color: var(--text-muted);
+      cursor: pointer;
+      transition: all .15s;
+    }
+    .refresh-btn:hover {
+      color: var(--accent);
+      border-color: var(--accent);
+    }
+    .refresh-btn svg { width: 13px; height: 13px; }
+    .refresh-btn.spinning svg {
+      animation: refresh-spin 1.1s linear infinite;
+    }
+    .refresh-btn.spinning {
+      color: var(--accent);
+      border-color: var(--accent);
+      cursor: wait;
+    }
+    @keyframes refresh-spin {
+      from { transform: rotate(0deg); }
+      to   { transform: rotate(360deg); }
+    }
+
+    /* Refresh modal — reuses .modal-backdrop / .modal from the profile
+       modal, but styles the form body here. */
+    .refresh-note {
+      font-size: 13px; line-height: 1.55;
+      color: var(--text-soft);
+      margin-bottom: 18px;
+    }
+    .refresh-note code {
+      background: var(--surface); padding: 1px 5px;
+      border-radius: 4px; font-size: 12px;
+    }
+    .refresh-form label {
+      display: block; font-size: 12px; font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.05em;
+      color: var(--text-muted); margin-bottom: 6px;
+    }
+    .refresh-form input[type="password"] {
+      width: 100%;
+      padding: 10px 12px;
+      background: var(--surface);
+      border: 1px solid var(--border-hi);
+      border-radius: 8px;
+      color: var(--text);
+      font-family: inherit; font-size: 13px;
+      outline: none;
+    }
+    .refresh-form input[type="password"]:focus { border-color: var(--accent); }
+    .refresh-form .remember-row {
+      display: flex; align-items: center; gap: 8px;
+      margin-top: 10px;
+      font-size: 12px; color: var(--text-soft);
+    }
+    .refresh-form .actions {
+      display: flex; gap: 10px; justify-content: flex-end;
+      margin-top: 18px;
+    }
+    .refresh-progress {
+      font-size: 13px; line-height: 1.55;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 14px 16px;
+      margin-top: 14px;
+      color: var(--text-soft);
+    }
+    .refresh-progress strong { color: var(--text); }
+    .refresh-progress .dot {
+      display: inline-block; width: 8px; height: 8px;
+      border-radius: 50%; margin-right: 6px;
+      background: var(--accent);
+      animation: refresh-pulse 1.1s ease-in-out infinite;
+    }
+    .refresh-progress.done .dot { animation: none; background: #22c55e; }
+    .refresh-progress.err  .dot { animation: none; background: #ef4444; }
+    @keyframes refresh-pulse {
+      0%, 100% { opacity: 0.4; } 50% { opacity: 1; }
+    }
+    .refresh-progress a { color: var(--accent); text-decoration: underline; }
+
     /* comp picker grid on home */
     .comp-grid {
       display: grid;
@@ -954,6 +1048,48 @@
   </div>
 </div>
 
+<!-- ═══════════ REFRESH DATASET MODAL ═══════════ -->
+<!-- Triggered by the ↻ button next to the freshness badge. POSTs a
+     workflow_dispatch to GitHub's REST API to kick off refresh.yml on
+     demand, then polls the run until it completes. Requires a PAT with
+     `workflow` scope — stored in localStorage if the user ticks "remember".
+     Public visitors see the button but their clicks hit a 401 without a
+     valid token. -->
+<div id="refresh-modal" class="modal-backdrop hidden">
+  <div class="modal" style="max-width: 540px;">
+    <div class="modal-head">
+      <h2>Refresh dataset</h2>
+      <button class="modal-close" id="refresh-close">✕</button>
+    </div>
+    <div class="modal-body">
+      <p class="refresh-note">
+        Our data comes from <a href="https://cricsheet.org" target="_blank" rel="noopener">Cricsheet</a>'s
+        daily-bundled archive — <strong>not a live feed</strong>. Cricsheet
+        usually rebuilds their zip a few hours after stumps, so matches
+        finished today may not appear until tomorrow. An automatic refresh
+        runs nightly at 00:00 UTC; this button triggers the same workflow
+        on-demand if you know Cricsheet already has new data.
+      </p>
+      <form id="refresh-form" class="refresh-form">
+        <label for="gh-token">GitHub personal access token (workflow scope)</label>
+        <input type="password" id="gh-token" autocomplete="off"
+               placeholder="ghp_…" required />
+        <div class="remember-row">
+          <input type="checkbox" id="gh-token-remember" checked />
+          <label for="gh-token-remember" style="margin:0; text-transform:none; letter-spacing:0; font-weight:400;">
+            Remember this token on this device
+          </label>
+        </div>
+        <div class="actions">
+          <button type="button" class="btn btn-secondary" id="refresh-cancel">Cancel</button>
+          <button type="submit" class="btn btn-primary" id="refresh-submit">Refresh now</button>
+        </div>
+      </form>
+      <div id="refresh-progress" class="refresh-progress" hidden></div>
+    </div>
+  </div>
+</div>
+
 <!-- ═══════════ TOP BAR ═══════════ -->
 <header class="topbar">
   <div class="topbar-inner">
@@ -961,6 +1097,17 @@
       <div class="brand-wordmark">⚡ The T20 <span>Analyst</span></div>
       <button id="comp-badge" class="comp-badge" title="Change competition">—</button>
       <span id="updated-badge" class="updated-badge"></span>
+      <button id="refresh-btn" class="refresh-btn"
+              title="Refresh dataset now (fires the nightly workflow on-demand)">
+        <!-- circular-arrow refresh icon -->
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="23 4 23 10 17 10"/>
+          <polyline points="1 20 1 14 7 14"/>
+          <path d="M3.51 9a9 9 0 0114.85-3.36L23 10"/>
+          <path d="M20.49 15a9 9 0 01-14.85 3.36L1 14"/>
+        </svg>
+      </button>
     </div>
 
     <nav class="topnav">
@@ -2958,6 +3105,247 @@ function paintUpdatedBadge() {
   ].filter(Boolean);
   el.title = parts.join('\n');
 }
+
+/* ── On-demand dataset refresh ────────────────────────────────────────
+ * Fires the GitHub Actions `refresh.yml` workflow via REST API. The site is
+ * static (GitHub Pages), so there's no server to hold a bot token — instead
+ * the owner pastes a PAT with `workflow` scope once and we cache it in
+ * localStorage. Public visitors without a token hit a 401 and see a clear
+ * error message.
+ *
+ * Fresh data reaches the site in roughly two steps, so the full cycle is
+ * ~6-10 minutes:
+ *   1. refresh.yml  — re-ingests Cricsheet zips + rebuilds JSONs + pushes.
+ *   2. pages.yml    — auto-fires on the push and redeploys the site.
+ * We poll step 1 via the API and consider the user's click done once
+ * refresh.yml completes. A prominent "Reload page" button then lets them
+ * see the new numbers after the Pages deploy catches up (~30s more).
+ */
+const GH_OWNER = 'Mustafa-OS';
+const GH_REPO  = 'T20-CricketAnalytics';
+const GH_WORKFLOW = 'refresh.yml';
+const GH_TOKEN_KEY = 'gh_refresh_token';
+
+const $refreshBtn       = document.getElementById('refresh-btn');
+const $refreshModal     = document.getElementById('refresh-modal');
+const $refreshForm      = document.getElementById('refresh-form');
+const $refreshClose     = document.getElementById('refresh-close');
+const $refreshCancel    = document.getElementById('refresh-cancel');
+const $refreshSubmit    = document.getElementById('refresh-submit');
+const $tokenInput       = document.getElementById('gh-token');
+const $tokenRemember    = document.getElementById('gh-token-remember');
+const $refreshProgress  = document.getElementById('refresh-progress');
+
+let _refreshPollTimer = null;   // so closing the modal mid-run doesn't stop polling
+
+function openRefreshModal() {
+  // Pre-fill with the saved token so the owner doesn't have to re-paste it.
+  const saved = localStorage.getItem(GH_TOKEN_KEY) || '';
+  $tokenInput.value = saved;
+  $tokenRemember.checked = !!saved;
+  $refreshProgress.hidden = true;
+  $refreshProgress.className = 'refresh-progress';
+  $refreshForm.hidden = false;
+  $refreshSubmit.disabled = false;
+  $refreshSubmit.textContent = 'Refresh now';
+  $refreshModal.classList.remove('hidden');
+  document.body.style.overflow = 'hidden';
+  // Autofocus the token field so the owner can paste immediately.
+  setTimeout(() => $tokenInput.focus(), 50);
+}
+
+function closeRefreshModal() {
+  $refreshModal.classList.add('hidden');
+  document.body.style.overflow = '';
+  // NB: if a poll is in flight we deliberately leave _refreshPollTimer
+  // running — the spinning button keeps the user informed, and we'll
+  // update progress next time they open the modal.
+}
+
+function setRefreshProgress(kind, html) {
+  $refreshProgress.hidden = false;
+  $refreshProgress.className = 'refresh-progress' + (kind ? ' ' + kind : '');
+  $refreshProgress.innerHTML = `<span class="dot"></span>${html}`;
+}
+
+async function ghFetch(url, { token, method = 'GET', body } = {}) {
+  const res = await fetch(url, {
+    method,
+    headers: {
+      'Accept': 'application/vnd.github+json',
+      'Authorization': `Bearer ${token}`,
+      'X-GitHub-Api-Version': '2022-11-28',
+      ...(body ? { 'Content-Type': 'application/json' } : {}),
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    const err = new Error(`GitHub ${res.status}: ${text || res.statusText}`);
+    err.status = res.status;
+    throw err;
+  }
+  // dispatches returns 204 No Content; gracefully handle empty bodies.
+  const txt = await res.text();
+  return txt ? JSON.parse(txt) : null;
+}
+
+/* Fire the workflow, then poll its run status until it completes. */
+async function triggerRefresh(token, remember) {
+  // Persist / clear token depending on "remember" choice. Done first so a
+  // later network error still leaves the user's preference reflected.
+  if (remember) localStorage.setItem(GH_TOKEN_KEY, token);
+  else          localStorage.removeItem(GH_TOKEN_KEY);
+
+  $refreshBtn.classList.add('spinning');
+  $refreshSubmit.disabled = true;
+  $refreshSubmit.textContent = 'Dispatching…';
+  setRefreshProgress('', 'Sending dispatch to GitHub Actions…');
+
+  const dispatchUrl =
+    `https://api.github.com/repos/${GH_OWNER}/${GH_REPO}/actions/workflows/${GH_WORKFLOW}/dispatches`;
+  const runsUrl =
+    `https://api.github.com/repos/${GH_OWNER}/${GH_REPO}/actions/workflows/${GH_WORKFLOW}/runs?per_page=5`;
+
+  // Capture "now" before dispatch so we can ignore any older runs when
+  // searching for the one we just started.
+  const dispatchedAt = new Date();
+
+  try {
+    await ghFetch(dispatchUrl, {
+      token, method: 'POST', body: { ref: 'main' },
+    });
+  } catch (e) {
+    $refreshBtn.classList.remove('spinning');
+    $refreshSubmit.disabled = false;
+    $refreshSubmit.textContent = 'Refresh now';
+    if (e.status === 401 || e.status === 403) {
+      setRefreshProgress('err',
+        `<strong>Authentication failed.</strong> The token is missing, invalid, or doesn't have <code>workflow</code> scope. ` +
+        `<a href="https://github.com/settings/tokens/new?scopes=workflow&description=T20%20Analyst%20refresh" target="_blank" rel="noopener">Create a new one</a> and try again.`);
+    } else if (e.status === 404) {
+      setRefreshProgress('err',
+        '<strong>Workflow not found.</strong> Either the token lacks repo access or the repo/workflow name is misconfigured.');
+    } else {
+      setRefreshProgress('err', `<strong>Dispatch failed.</strong> ${e.message}`);
+    }
+    return;
+  }
+
+  // GitHub's API is eventually consistent — the new run may not appear for
+  // a second or two after dispatch. Give it a beat, then start polling.
+  setRefreshProgress('', 'Dispatched. Waiting for the run to start…');
+  $refreshSubmit.textContent = 'Running…';
+  await new Promise(r => setTimeout(r, 2500));
+
+  let runId = null;
+  for (let attempt = 0; attempt < 10 && !runId; attempt++) {
+    try {
+      const data = await ghFetch(runsUrl, { token });
+      const runs = (data.workflow_runs || [])
+        .filter(r => r.event === 'workflow_dispatch')
+        .filter(r => new Date(r.created_at) >= new Date(dispatchedAt.getTime() - 30_000));
+      if (runs.length) runId = runs[0].id;
+    } catch (_) { /* transient; retry */ }
+    if (!runId) await new Promise(r => setTimeout(r, 2500));
+  }
+  if (!runId) {
+    setRefreshProgress('err',
+      '<strong>Started, but couldn\'t locate the run.</strong> ' +
+      `Check the <a href="https://github.com/${GH_OWNER}/${GH_REPO}/actions/workflows/${GH_WORKFLOW}" target="_blank" rel="noopener">Actions tab</a> directly.`);
+    $refreshBtn.classList.remove('spinning');
+    return;
+  }
+
+  const runUrl = `https://github.com/${GH_OWNER}/${GH_REPO}/actions/runs/${runId}`;
+  pollRefreshStatus(token, runId, runUrl);
+}
+
+/* Poll a specific run every 5 s until status === 'completed'. */
+function pollRefreshStatus(token, runId, runUrl) {
+  const apiUrl = `https://api.github.com/repos/${GH_OWNER}/${GH_REPO}/actions/runs/${runId}`;
+  clearTimeout(_refreshPollTimer);
+
+  const tick = async () => {
+    try {
+      const run = await ghFetch(apiUrl, { token });
+      const status = run.status;        // queued | in_progress | completed
+      const conclusion = run.conclusion; // success | failure | cancelled | ...
+      if (status !== 'completed') {
+        const label = status === 'queued' ? 'Queued' : 'Running';
+        setRefreshProgress('',
+          `<strong>${label}.</strong> Typical cycle is 6–10 min (ingest + precompute + audit). ` +
+          `<a href="${runUrl}" target="_blank" rel="noopener">Live log ↗</a>`);
+        _refreshPollTimer = setTimeout(tick, 5000);
+        return;
+      }
+      // Completed — finalise UI
+      $refreshBtn.classList.remove('spinning');
+      $refreshSubmit.disabled = false;
+      $refreshSubmit.textContent = 'Refresh now';
+
+      if (conclusion === 'success') {
+        // Check whether last_updated actually moved — the workflow succeeds
+        // even when Cricsheet had nothing new (it just doesn't push a
+        // commit). Cache-bust the fetch so we don't read the old JSON.
+        const bust = `?t=${Date.now()}`;
+        const url = (FLASK ? '/api/competitions' : 'static/data/competitions.json') + bust;
+        let nowStamp = null;
+        try {
+          const j = await fetch(url).then(r => r.json());
+          nowStamp = j && !Array.isArray(j) ? j.last_updated : null;
+        } catch (_) { /* non-fatal */ }
+        const prevStamp = DATASET_META.last_updated;
+        const changed = nowStamp && nowStamp !== prevStamp;
+
+        setRefreshProgress('done',
+          changed
+            ? `<strong>Dataset refreshed.</strong> New data is published — reload to view it. ` +
+              `The Pages redeploy may take another 20–30 s to propagate.`
+            : `<strong>Workflow completed — no new data from Cricsheet.</strong> ` +
+              `Their zip didn't contain any matches past what we already have. Try again later. ` +
+              `<a href="${runUrl}" target="_blank" rel="noopener">Run log ↗</a>`);
+        if (changed) {
+          // Offer a reload control so the user stays in control.
+          $refreshProgress.innerHTML +=
+            ' <button type="button" class="btn btn-primary" ' +
+            '   style="margin-left:8px; padding:6px 14px; font-size:12px;" ' +
+            '   onclick="location.reload()">Reload page</button>';
+        }
+      } else {
+        setRefreshProgress('err',
+          `<strong>Workflow ${conclusion}.</strong> ` +
+          `<a href="${runUrl}" target="_blank" rel="noopener">Open the run log ↗</a> to see what broke.`);
+      }
+    } catch (e) {
+      setRefreshProgress('err', `<strong>Polling error.</strong> ${e.message}`);
+      $refreshBtn.classList.remove('spinning');
+      $refreshSubmit.disabled = false;
+      $refreshSubmit.textContent = 'Refresh now';
+    }
+  };
+  tick();
+}
+
+// Button → modal wiring
+$refreshBtn.addEventListener('click', openRefreshModal);
+$refreshClose.addEventListener('click', closeRefreshModal);
+$refreshCancel.addEventListener('click', closeRefreshModal);
+$refreshModal.addEventListener('click', e => {
+  // Click outside the modal card → close
+  if (e.target === $refreshModal) closeRefreshModal();
+});
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && !$refreshModal.classList.contains('hidden')) {
+    closeRefreshModal();
+  }
+});
+$refreshForm.addEventListener('submit', e => {
+  e.preventDefault();
+  const token = $tokenInput.value.trim();
+  if (!token) return;
+  triggerRefresh(token, $tokenRemember.checked);
+});
 
 /* Render the picker into any container (home grid OR welcome modal grid). */
 function paintCompGrid(containerId) {
