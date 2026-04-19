@@ -290,6 +290,36 @@ def build_wc(t20is_unfiltered: pd.DataFrame) -> pd.DataFrame:
     return wc
 
 
+# Franchise T20 comps that play inside a single calendar year. Cricsheet
+# sometimes labels these with split-year strings (e.g. IPL 2008 → "2007/08",
+# IPL 2010 → "2009/10", PSL 2017 → "2016/17") and _season_to_int truncates
+# to the leading year, which silently collapses two editions into one
+# "season". Re-derive season from the match date for these comps.
+#
+# BBL is deliberately NOT in this set: it plays Dec-Feb, so each edition
+# legitimately spans two calendar years, and the convention is to label
+# it by the starting year (BBL 11 = "2021/22" = 2021). Re-deriving would
+# split one BBL season into two calendar years — breaks user expectations.
+SINGLE_YEAR_COMPS = {
+    'ipl', 'psl', 'cpl', 'ntb', 'hnd',
+    'sa20', 'ilt', 'mlc', 'lpl', 'bpl',
+}
+
+
+def _rederive_season_from_date(df: pd.DataFrame) -> pd.DataFrame:
+    """For single-calendar-year comps, overwrite `season` with the year of
+    the match's date (grouped per match_id so every ball of one match gets
+    the same label)."""
+    if 'date' not in df.columns or not len(df):
+        return df
+    dt = pd.to_datetime(df['date'], errors='coerce')
+    df['season'] = (
+        dt.dt.year.groupby(df['match_id']).transform('min')
+          .astype('Int64')
+    )
+    return df
+
+
 def main(argv: Iterable[str]):
     wanted = [a for a in argv if a in COMPS]
     if not wanted:
@@ -303,19 +333,17 @@ def main(argv: Iterable[str]):
         df = build_one(code, zip_name)
         if df is None:
             continue
+        if code in SINGLE_YEAR_COMPS:
+            before_years = sorted(df['season'].dropna().unique().tolist()) if 'season' in df.columns else []
+            df = _rederive_season_from_date(df)
+            after_years  = sorted(df['season'].dropna().unique().tolist())
+            if before_years != after_years:
+                print(f'  🔁 {code} season re-derived from dates: '
+                      f'{len(before_years)}→{len(after_years)} seasons')
         if code == 't20is':
-            # Cricsheet labels cross-calendar seasons like "2025/26" which
-            # _season_to_int truncates to 2025, so a T20I played in Feb 2026
-            # lands under season=2025. Unlike BBL (where "2024/25" is the
-            # conventional one-season label), international bilaterals are
-            # standalone games — users expect calendar-year filtering.
-            # Re-derive season from the match date per match_id.
-            if 'date' in df.columns and len(df):
-                dt = pd.to_datetime(df['date'], errors='coerce')
-                df['season'] = (
-                    dt.dt.year.groupby(df['match_id']).transform('min')
-                      .astype('Int64')
-                )
+            # T20I bilaterals are standalone games — users expect calendar-
+            # year filtering just like the franchise leagues above.
+            df = _rederive_season_from_date(df)
             # Keep the raw frame aside for the WC builder (the main WC
             # draw includes associate nations and we want those balls).
             t20is_raw = df

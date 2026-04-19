@@ -1156,33 +1156,36 @@
               </div>
             </div>
             <div class="cais-panel-section">
-              <div class="cais-panel-section-title">Context multipliers</div>
+              <div class="cais-panel-section-title">Context bonuses — how much each factor lifts CAIS</div>
               <div class="cais-slider-row">
-                <label>Pressure</label>
-                <input type="range" data-bat-weight="s_pressure" min="0" max="2" step="0.1">
+                <label>Pressure bonus</label>
+                <input type="range" data-bat-weight="s_pressure" min="0" max="2" step="0.05">
                 <span class="cais-slider-val" data-for="s_pressure"></span>
               </div>
               <div class="cais-slider-row">
-                <label>Knockout stage</label>
-                <input type="range" data-bat-weight="s_stage" min="0" max="2" step="0.1">
+                <label>Knockout bonus</label>
+                <input type="range" data-bat-weight="s_stage" min="0" max="2" step="0.05">
                 <span class="cais-slider-val" data-for="s_stage"></span>
               </div>
               <div class="cais-slider-row">
                 <label>Opponent (WC)</label>
-                <input type="range" data-bat-weight="s_opponent" min="0" max="2" step="0.1">
+                <input type="range" data-bat-weight="s_opponent" min="0" max="2" step="0.05">
                 <span class="cais-slider-val" data-for="s_opponent"></span>
               </div>
               <div class="cais-slider-row">
                 <label>Recent form</label>
-                <input type="range" data-bat-weight="s_form" min="0" max="2" step="0.1">
+                <input type="range" data-bat-weight="s_form" min="0" max="2" step="0.05">
                 <span class="cais-slider-val" data-for="s_form"></span>
               </div>
             </div>
             <div class="cais-panel-hint">
-              Drag any slider to reweight CAIS. Phase sliders set the multiplier
-              outright (default Death = 1.35); context sliders scale the
-              bonus linearly (0 = off, 1 = default, 2 = double impact).
-              The table re-ranks instantly.
+              <strong>Phase sliders</strong> (e.g. <em>Death = 1.35×</em>) are the literal
+              multipliers applied to runs in that phase.
+              <strong>Context bonuses</strong> (shown as %) scale the lift a factor gives
+              to CAIS — <em>100%</em> = default setting, <em>0%</em> = factor switched off,
+              <em>200%</em> = double impact. A final at <em>Knockout = 200%</em> rewards
+              knockout runs twice as much as a group-stage ball; at <em>0%</em> it's
+              treated as just another match.
             </div>
           </div>
         </div>
@@ -2015,6 +2018,20 @@ function applyCaisWeights(rows, kind) {
   return out;
 }
 
+/* Slider keys in the "% importance" family — these scale a *bonus* (how
+   much pressure / stage / opponent / form lifts the score above the raw
+   runs baseline). 100% = default, 0% = factor switched off, 200% = double
+   impact. Formatted as percentages so the UI doesn't look like every
+   slider is already set to "no effect". */
+const CAIS_PCT_KEYS = new Set([
+  's_pressure', 's_stage', 's_opponent', 's_form', 'run_scalar',
+]);
+function formatCaisVal(key, val) {
+  return CAIS_PCT_KEYS.has(key)
+    ? `${Math.round(val * 100)}%`
+    : `${val.toFixed(2)}×`;
+}
+
 /* Push current weights into the sliders + value readouts + dirty flags.
    Called on initial render, after Reset, and any time the sliders need
    to be re-synced (eg switching competitions). */
@@ -2034,7 +2051,7 @@ function syncCaisPanelUI(kind) {
     input.classList.toggle('dirty', !isDef);
     const out = panel.querySelector(`.cais-slider-val[data-for="${key}"]`);
     if (out) {
-      out.textContent = val.toFixed(2);
+      out.textContent = formatCaisVal(key, val);
       out.classList.toggle('dirty', !isDef);
     }
   });
