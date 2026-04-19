@@ -631,13 +631,79 @@ class CricketAnalyser:
         data.loc[is_first_wkt & (data['balls_in_innings'] <= 6),  'early_wicket_mult'] = 1.35
         data.loc[is_first_wkt & data['balls_in_innings'].between(7, 18), 'early_wicket_mult'] = 1.15
 
+        # ── Stage multiplier — knockout / final boost.
+        # Cricsheet's CSV schema stores match_number as plain integers even
+        # for finals (no "Final" / "Semi-Final" tag), so we infer stage from
+        # match dates instead: within each (competition, season) the latest
+        # match is the Final, and the 1-3 matches immediately preceding it
+        # (within ~7 days) are the Semis / Qualifiers / Eliminator.
+        #
+        #   Final             → 1.30
+        #   Semi / Qualifier  → 1.20  (rank 1-3, within 7 days of final)
+        #   Quarter / bubble  → 1.10  (rank 4-5, within 10 days of final)
+        #   Group stage       → 1.00
+        data['stage_mult'] = 1.0
+        if {'date', 'competition', 'season'}.issubset(data.columns):
+            mm = (data.groupby('match_id')
+                      .agg(_comp=('competition', 'first'),
+                           _season=('season', 'first'),
+                           _mdate=('date', 'min'))
+                      .reset_index())
+            mm['_mdate'] = pd.to_datetime(mm['_mdate'], errors='coerce')
+            mm = mm.dropna(subset=['_mdate', '_season'])
+            # Rank matches within (comp, season) — rank 0 = latest = Final.
+            mm = mm.sort_values(
+                ['_comp', '_season', '_mdate', 'match_id'],
+                ascending=[True, True, False, False]
+            )
+            mm['_rank'] = mm.groupby(['_comp', '_season']).cumcount()
+            final_dates = (mm[mm['_rank'] == 0]
+                           [['_comp', '_season', '_mdate']]
+                           .rename(columns={'_mdate': '_final_date'}))
+            mm = mm.merge(final_dates, on=['_comp', '_season'], how='left')
+            mm['_days_before_final'] = (
+                (mm['_final_date'] - mm['_mdate']).dt.days.abs()
+            )
+            # Default neutral
+            mm['stage_mult'] = 1.0
+            # Quarter / playoff bubble: ranks 4-5 within 10 days
+            mask_qf = (mm['_rank'].between(4, 5)) & (mm['_days_before_final'] <= 10)
+            mm.loc[mask_qf, 'stage_mult'] = 1.10
+            # Semi / Qualifier / Eliminator: ranks 1-3 within 7 days
+            mask_sf = (mm['_rank'].between(1, 3)) & (mm['_days_before_final'] <= 7)
+            mm.loc[mask_sf, 'stage_mult'] = 1.20
+            # Final: rank 0
+            mm.loc[mm['_rank'] == 0, 'stage_mult'] = 1.30
+            stage_map = dict(zip(mm['match_id'], mm['stage_mult']))
+            data['stage_mult'] = data['match_id'].map(stage_map).fillna(1.0)
+
+        # ── Opponent-quality multiplier (WC main draw only).
+        # In the WC, the main tournament mixes Full-Members with qualified
+        # associates (Namibia, Netherlands, USA, Scotland, etc.). Runs / wickets
+        # by a Full-Member vs an associate are worth less; by an associate vs
+        # a Full-Member, worth more. Everywhere else this stays at 1.0.
+        is_wc = (data['competition'] == 'wc') if 'competition' in data.columns else pd.Series(False, index=data.index)
+        is_test_bat  = data['batting_team'].isin(self.TEST_NATIONS)
+        is_test_bowl = data['bowling_team'].isin(self.TEST_NATIONS)
+
+        data['bat_opponent_mult']  = 1.0
+        data['bowl_opponent_mult'] = 1.0
+        # Test batter facing associate bowling → easier, less credit (0.85)
+        data.loc[is_wc & is_test_bat & ~is_test_bowl, 'bat_opponent_mult']  = 0.85
+        # Associate batter facing Test bowling → harder, more credit (1.20)
+        data.loc[is_wc & ~is_test_bat & is_test_bowl, 'bat_opponent_mult']  = 1.20
+        # Test bowler against associate batting → easier, less credit
+        data.loc[is_wc & is_test_bowl & ~is_test_bat, 'bowl_opponent_mult'] = 0.85
+        # Associate bowler against Test batting → harder, more credit
+        data.loc[is_wc & ~is_test_bowl & is_test_bat, 'bowl_opponent_mult'] = 1.20
+
         self._enriched_cache[key] = data
         return data
 
     def cais_batting(self, min_balls=50, season=None, min_runs=200, competition=None):
         """
         Context-Adjusted Impact Score — Batting.
-        CAIS = Σ(runs × phase_weight × pressure) / balls × 100 × form_avg
+        CAIS = Σ(runs × phase_weight × pressure × stage × opponent) / balls × 100 × form_avg
         """
         comp = competition if competition is not None else self.default_comp
         data = self._build_enriched(competition=comp)
@@ -653,7 +719,9 @@ class CricketAnalyser:
                 continue
             weighted_runs = (grp['batsman_runs']
                              * grp['phase_bat_weight']
-                             * grp['pressure']).sum()
+                             * grp['pressure']
+                             * grp['stage_mult']
+                             * grp['bat_opponent_mult']).sum()
             form_avg = np.mean([form_map.get((batter, mid), 1.0)
                                 for mid in grp['match_id'].unique()])
             cais = weighted_runs / len(grp) * 100 * form_avg
@@ -680,7 +748,9 @@ class CricketAnalyser:
 
         wicket_value = 30 · phase×role · batter_tier · form · pressure
                          · partnership_mult · early_wicket_mult
+                         · stage_mult · bowl_opponent_mult
         run_cost     = runs_conceded · phase_bowl_weight · 0.5
+                         · stage_mult · bowl_opponent_mult
         CAIS         = Σ(is_wicket · wicket_value − run_cost) / overs
         """
         comp = competition if competition is not None else self.default_comp
@@ -715,8 +785,16 @@ class CricketAnalyser:
                * data['pressure']
                * data['partnership_mult']
                * data['early_wicket_mult']
+               * data['stage_mult']
+               * data['bowl_opponent_mult']
         )
-        data['_run_cost'] = data['total_runs'] * data['phase_bowl_weight'] * 0.5
+        data['_run_cost'] = (
+            data['total_runs']
+            * data['phase_bowl_weight']
+            * 0.5
+            * data['stage_mult']
+            * data['bowl_opponent_mult']
+        )
         data['_ball_score'] = data['is_wicket'] * data['_wicket_value'] - data['_run_cost']
 
         # ── Aggregate per bowler ─────────────────────────────────────────

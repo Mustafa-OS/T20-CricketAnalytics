@@ -860,8 +860,9 @@
         <div class="feature-icon">⚡</div>
         <div class="feature-title">CAIS Engine</div>
         <div class="feature-desc">
-          Context-Adjusted Impact Score — ranks batters & bowlers using a 5-factor
-          weighting system. Season & team filters built in.
+          Context-Adjusted Impact Score — ranks batters & bowlers using a 7-factor
+          weighting system (phase, pressure, form, tier, matchup, stage & opponent-quality).
+          Season & team filters built in.
         </div>
       </div>
       <div class="feature" data-view="batting">
@@ -919,10 +920,11 @@
 
     <h2 class="section-title">⚡ CAIS — Context-Adjusted Impact Score</h2>
     <p class="section-sub">
-      Every ball re-priced by match phase, bowler type, batter quality, form, and pressure.
-      Tap any year to filter — <strong>tap multiple</strong> to combine them into a single view
-      (a player who appears in more than one of the picked years is aggregated, not duplicated).
-      Tap <strong>All</strong> to clear back to career totals.
+      Every ball re-priced by match phase, bowler type, batter quality, form, pressure,
+      <strong>match stage</strong> (group → QF → semi → final) and <strong>opponent quality</strong>
+      (Test vs associate in the World Cup). Tap any year to filter — <strong>tap multiple</strong>
+      to combine them into a single view (a player who appears in more than one of the picked years
+      is aggregated, not duplicated). Tap <strong>All</strong> to clear back to career totals.
     </p>
 
     <!-- Filter bar -->
@@ -1005,7 +1007,7 @@
         Each ball a batter faces is worth its raw run value multiplied by three context weights:
       </p>
       <div class="formula">
-        CAIS<sub>bat</sub> = Σ(runs × phase<sub>bat</sub> × pressure) ÷ balls × 100 × form<sub>avg</sub>
+        CAIS<sub>bat</sub> = Σ(runs × phase<sub>bat</sub> × pressure × stage × opponent) ÷ balls × 100 × form<sub>avg</sub>
       </div>
       <table class="mini-table">
         <thead>
@@ -1027,6 +1029,16 @@
             <td>1.0 → 1.45</td>
             <td>Rolling 3-match run window. Runs on a purple patch score a little extra.</td>
           </tr>
+          <tr>
+            <td>stage</td>
+            <td>Group: <strong>1.0</strong> · QF: 1.10 · SF/Q/Elim: 1.20 · <strong>Final: 1.30</strong></td>
+            <td>Runs in the knockouts count more than group-stage runs. The latest match of every (league, season) is the Final; the 1–3 matches in the preceding week are the semis / qualifiers / eliminator.</td>
+          </tr>
+          <tr>
+            <td>opponent <em>(WC only)</em></td>
+            <td>Test vs Test: <strong>1.0</strong> · Test vs Assoc: <strong>0.85</strong> · Assoc vs Test: <strong>1.20</strong></td>
+            <td>In the T20 World Cup, runs by a Full-Member against a qualified associate (Namibia, Netherlands, USA, etc.) carry less weight; runs by an associate player against a Test side carry more.</td>
+          </tr>
         </tbody>
       </table>
     </div>
@@ -1035,13 +1047,13 @@
       <h3>Bowling CAIS</h3>
       <p>
         Each delivery scores the bowler positively on wickets and negatively on runs conceded,
-        with <strong>wicket value scaled by seven factors</strong>:
+        with <strong>wicket value scaled by nine factors</strong>:
       </p>
       <div class="formula">
-        wicket_value = 30 × phase×role × batter_tier × form × pressure × partnership_mult × early_wicket_mult
+        wicket_value = 30 × phase×role × batter_tier × form × pressure × partnership_mult × early_wicket_mult × stage × opponent
       </div>
       <div class="formula">
-        run_cost = runs_conceded × phase<sub>bowl</sub> × 0.5
+        run_cost = runs_conceded × phase<sub>bowl</sub> × 0.5 × stage × opponent
       </div>
       <div class="formula">
         CAIS<sub>bowl</sub> = Σ(wicket_value − run_cost) ÷ overs
@@ -1074,6 +1086,10 @@
             <td>Size of the partnership that was just broken. Neutral at ≤20 runs, caps at 70+ runs.</td></tr>
           <tr><td>early_wicket_mult</td><td>1.0 · 1.15 · 1.35</td>
             <td>Reward for breaking the opening partnership: 1.35× in the 1st over, 1.15× in overs 2–3.</td></tr>
+          <tr><td>stage</td><td>1.0 · 1.10 · 1.20 · 1.30</td>
+            <td>Group → Quarter → Semi/Qualifier → Final. Inferred from match dates within each (competition, season).</td></tr>
+          <tr><td>opponent <em>(WC only)</em></td><td>0.85 · 1.0 · 1.20</td>
+            <td>Dismissing / conceding to the weaker side carries 0.85×; doing so against the stronger side carries 1.20×. Test vs Test stays at 1.0.</td></tr>
         </tbody>
       </table>
     </div>
@@ -1121,6 +1137,25 @@
         <strong>Why cap combined pressure at 1.5?</strong> Even the most extreme T20 moment
         (collapsing chase at 9 down needing 14 an over) shouldn't make a ball count for more
         than 1.5× its baseline. The cap stops pathological match states from swamping the leaderboard.
+      </p>
+      <p>
+        <strong>Why does stage matter?</strong> A century in a dead group game and a century
+        in the final of a knockout are treated identically by conventional stats. They shouldn't
+        be: the final is typically tighter, decided on smaller margins, and played under far more
+        scrutiny. Stage adds <strong>+10 %</strong> for quarters, <strong>+20 %</strong> for
+        semis / qualifiers / eliminator, and <strong>+30 %</strong> for the final itself. Group-stage
+        cricket stays at baseline.
+      </p>
+      <p>
+        <strong>Why does opponent quality apply only at the World Cup?</strong> Franchise leagues
+        are roughly peer-matched — every side fields a professional T20 squad. The T20 World Cup
+        is different: its main draw mixes Full-Member nations with qualified associates (Namibia,
+        Netherlands, USA, Scotland, etc.), and the talent gap is real. A Test batter smashing
+        Namibia's 5th bowler is not the same as the same batter taking down Australia's attack, so
+        CAIS discounts the former to <strong>0.85×</strong>. The mirror is also true — a Namibian
+        bowler taking an Indian wicket is rewarded <strong>1.20×</strong>. Test-vs-Test stays at
+        baseline. All other competitions (including T20 bilaterals, which are already filtered to
+        Full-Member nations) pass through at 1.0.
       </p>
     </div>
 
