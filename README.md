@@ -1,32 +1,42 @@
-# The T20 Analyst
+# 🏏 The T20 Analyst
 
-**Ball-by-ball analytics across every major T20 competition, fronted by CAIS —
-a context-adjusted impact score that re-prices every delivery.**
+**Cricket analytics for every major T20 league, built around a new metric that rates every ball by how much it actually mattered.**
 
-**Live site: [mustafa-os.github.io/T20-CricketAnalytics](https://mustafa-os.github.io/T20-CricketAnalytics/)**
+**[▶ Open the live site](https://mustafa-os.github.io/T20-CricketAnalytics/)** · Python · pandas · Flask · Plotly · GitHub Actions
 
-![The T20 Analyst home page — competition picker covering 13 T20 leagues and international events](docs/img/home.png)
+![The T20 Analyst home page: competition picker covering 13 T20 leagues and international events](docs/img/home.png)
 
-13 competitions. 6,300+ matches. ~1.8 million deliveries. One lens that refuses
-to let a death-over six against an elite attack count the same as a middle-over
-single off the fifth bowler in a dead game.
+## At a glance
 
----
+- 📊 **13 competitions, 6,300+ matches, ~1.8 million balls**: IPL, PSL, Big Bash, The Hundred, T20 World Cups and more.
+- 🧮 **CAIS, my own metric.** It scores every ball by match situation (phase, pressure, opponent, knockout stage), so a last-over six against a top bowler isn't worth the same as a single in a dead game.
+- 🔁 **Updates itself every night.** A GitHub Actions pipeline downloads new matches, rebuilds the site, and **refuses to publish if the numbers drift** from official records (IPL Orange/Purple Caps, PSL leaders, World Cup top scorers).
+- ⚡ **Fast and free to host.** The public site is static JSON on GitHub Pages: no server, under 50 ms per view.
 
-## What it does
+## The idea
 
-Conventional batting and bowling tables flatten the thing that actually matters
-in T20: **context**. A strike rate of 140 is average in the powerplay and elite
-at the death. A 30-run spell is cheap in the 18th over and expensive in the
-middle. A four-for against Sri Lanka and Namibia at a World Cup is not a
-four-for against Sri Lanka and India.
+Normal batting and bowling tables ignore **context**, which is what matters most in T20:
 
-The T20 Analyst scores every delivery *with context attached* — phase of the
-innings, batter quality, bowler type, match pressure, tournament stage,
-opponent quality — and rolls leaderboards up from there. The result is an
-ordering that reflects the quality of what happened, not just the volume.
+- A strike rate of 140 is average in the first six overs and elite at the death.
+- 30 runs off a bowler is cheap in the 18th over and expensive in the middle overs.
+- Four wickets against India at a World Cup is not the same as four against Namibia.
 
-### Competitions (13)
+The T20 Analyst attaches context to every ball before adding anything up, so leaderboards show **quality, not just volume**. The scoring sliders are live, so you can switch any factor off or double it and watch the rankings change.
+
+![CAIS view for the T20 World Cups: leaderboard, season and team filters, and the scoring-control sliders](docs/img/cais-leaderboard.png)
+
+## What you can do on the site
+
+Pick a competition, then:
+
+1. **CAIS:** batting and bowling leaderboards using the context-adjusted score, with live sliders to tune the weights. This is the flagship view.
+2. **Batting:** runs, average, strike rate, with an average-vs-strike-rate bubble chart.
+3. **Bowling:** wickets and economy, with a wickets-vs-economy scatter.
+4. **Records:** highest scores, centuries, team win rates, how batters get out.
+5. **Player profiles:** career stats, season-by-season trends and CAIS rank. Click any name in any table.
+
+<details>
+<summary><b>All 13 competitions</b></summary>
 
 | Code     | Competition                      |
 | -------- | -------------------------------- |
@@ -47,22 +57,22 @@ ordering that reflects the quality of what happened, not just the volume.
 The T20I view is filtered to the 12 ICC Full Members so leaderboards reflect
 first-tier opposition, not tier-6 warm-up fixtures.
 
-### Five views per competition
+</details>
 
-1. **CAIS** — batting and bowling leaderboards with the context-adjusted score,
-   a bar chart of the top 20, a CAIS-vs-raw-SR scatter, season and team
-   filters, and a live scoring-control panel. The flagship view.
-2. **Batting** — runs, average, strike rate, and an average-vs-SR bubble plot.
-3. **Bowling** — wickets, economy, and a wickets-vs-economy scatter.
-4. **Records** — highest scores, century makers, team win-rates, dismissal
-   breakdowns.
-5. **Player profile modal** — career stats, per-season trends, innings history,
-   and the player's CAIS rank within the current competition. Opens from any
-   name in any leaderboard.
+## How CAIS works
 
----
+**Batting:** every run is multiplied by how hard it was to score, then turned into a rate:
 
-## CAIS — Context-Adjusted Impact Score
+    CAIS = Σ (runs × phase × pressure × stage × opponent) / balls × 100 × form
+
+**Bowling:** every wicket is worth more when it matters more (an elite batter, a big partnership, a tense chase, an early breakthrough), and every run conceded costs more at the death:
+
+    CAIS = Σ (wicket value − run cost) / overs
+
+A powerplay wicket that breaks a 60-run stand against an elite batter in a tense chase can score **5–6× more** than dismissing a tailender in a dead middle over. That's the whole point.
+
+<details>
+<summary><b>Full weights and design choices</b></summary>
 
 ![CAIS view for the T20 World Cups — leaderboard, season and team filters, and the scoring-control sliders](docs/img/cais-leaderboard.png)
 
@@ -133,9 +143,24 @@ The CAIS page exposes the phase weights and context bonuses as live sliders —
 set a bonus to 0% to switch that factor off, 200% to double it, and the
 leaderboard re-ranks client-side without recomputing anything server-side.
 
----
+</details>
 
-## How it works
+## How it's built
+
+```
+Cricsheet data ──ingest.py──▶ CSVs ──CricketAnalyser.py──▶ every ball enriched with context
+                                                    │
+                                     precompute.py  ▼
+                                     static JSON per competition ──▶ GitHub Pages
+                                     (audit.py blocks publishing if numbers drift)
+```
+
+- **`CricketAnalyser.py`**: the analytics engine, ~1,100 lines of vectorised pandas/NumPy.
+- **`audit.py`**: checks computed leaderboards against official records before anything goes live.
+- **`index.html`**: one page that works both as a static site and against the local Flask API.
+
+<details>
+<summary><b>Technical details: delivery modes, pipeline, automation, performance</b></summary>
 
 ### Two delivery modes, one page
 
@@ -200,9 +225,39 @@ Measured on an M2 laptop with a warm parquet cache: app boot ~2.8 s, first
 CAIS build for a competition ~0.35–1.6 s, repeat views ~0.14 s, any static
 JSON fetch <50 ms.
 
----
+### Notable design choices
 
-## Getting started
+- **`match_id` collision guard.** WC matches also appear inside the raw T20I
+  frame under the same `match_id`, so the stage-multiplier map is keyed on
+  `(competition, match_id)` — knockout bumps from the World Cup can't leak
+  into a bilateral view.
+- **Every aggregated row carries a balls-weighted `team` field**, which powers
+  the client-side team chip and the WC Pool filter without an extra
+  round-trip.
+- **Multi-season merge.** Selecting several seasons fetches each season's JSON
+  and combines them per player with an endpoint-specific merger
+  (balls-weighted CAIS, additive runs/wickets, weighted SR/economy) — a
+  player who appears in three seasons shows once, aggregated.
+- **Accuracy audited, not assumed.** The nightly pipeline refuses to publish
+  if computed leaderboards drift from published reference values.
+
+### Project layout
+
+    .
+    ├── index.html               # Single-page UI (Plotly + vanilla JS). Dual-mode.
+    ├── app.py                   # Flask backend — /api routes for dynamic mode.
+    ├── CricketAnalyser.py       # Analytics engine. Enrichment + CAIS v3.
+    ├── ingest.py                # Cricsheet zips → project CSV schema.
+    ├── precompute.py            # Bakes every static/data/<comp>/*.json file.
+    ├── audit.py                 # Leaderboard accuracy gate vs reference values.
+    ├── CAIS_Methodology.docx    # Longer methodology write-up.
+    ├── .github/workflows/       # Nightly data refresh + Pages deploy.
+    ├── data/                    # (gitignored) raw zips, CSVs, parquet cache.
+    └── static/data/             # Precomputed JSON — manifest + ~15 files per comp.
+
+</details>
+
+## Run it locally
 
 The zero-setup option is the [live site](https://mustafa-os.github.io/T20-CricketAnalytics/).
 To run locally:
@@ -230,54 +285,12 @@ python precompute.py ipl psl wc   # just the named ones
 > `static/data/competitions.json` with a manifest covering only those codes.
 > Restore it with `git checkout HEAD -- static/data/competitions.json`.
 
----
+## About
 
-## Project layout
+Personal project, built from April 2026 and still running nightly. It started as a PSL-only dashboard and grew into a multi-competition platform with its own metric, static-site compiler and automated data pipeline. All ball-by-ball data is from [Cricsheet](https://cricsheet.org/). CAIS, the pipeline, the UI and all analysis code are my own.
 
-    .
-    ├── index.html               # Single-page UI (Plotly + vanilla JS). Dual-mode.
-    ├── app.py                   # Flask backend — /api routes for dynamic mode.
-    ├── CricketAnalyser.py       # Analytics engine. Enrichment + CAIS v3.
-    ├── ingest.py                # Cricsheet zips → project CSV schema.
-    ├── precompute.py            # Bakes every static/data/<comp>/*.json file.
-    ├── audit.py                 # Leaderboard accuracy gate vs reference values.
-    ├── CAIS_Methodology.docx    # Longer methodology write-up.
-    ├── .github/workflows/       # Nightly data refresh + Pages deploy.
-    ├── data/                    # (gitignored) raw zips, CSVs, parquet cache.
-    └── static/data/             # Precomputed JSON — manifest + ~15 files per comp.
+Code is MIT-licensed (see [LICENSE](LICENSE)); the data stays subject to [Cricsheet's terms](https://cricsheet.org/register/).
 
 ---
 
-## Notable design choices
-
-- **`match_id` collision guard.** WC matches also appear inside the raw T20I
-  frame under the same `match_id`, so the stage-multiplier map is keyed on
-  `(competition, match_id)` — knockout bumps from the World Cup can't leak
-  into a bilateral view.
-- **Every aggregated row carries a balls-weighted `team` field**, which powers
-  the client-side team chip and the WC Pool filter without an extra
-  round-trip.
-- **Multi-season merge.** Selecting several seasons fetches each season's JSON
-  and combines them per player with an endpoint-specific merger
-  (balls-weighted CAIS, additive runs/wickets, weighted SR/economy) — a
-  player who appears in three seasons shows once, aggregated.
-- **Accuracy audited, not assumed.** The nightly pipeline refuses to publish
-  if computed leaderboards drift from published reference values.
-
----
-
-## Project context
-
-Personal project, built from April 2026 onwards and still running nightly.
-Started as a PSL-only dashboard and grew into a full multi-competition
-platform with its own metric, static-site compiler and automated data
-pipeline. All ball-by-ball data is from [Cricsheet](https://cricsheet.org/);
-CAIS, the enrichment pipeline, the UI and every line of analysis code are
-original to this project.
-
-Code is MIT-licensed (see [LICENSE](LICENSE)); the data remains subject to
-[Cricsheet's terms](https://cricsheet.org/register/).
-
----
-
-Built by Mustafa Suleman — MEng Design Engineering, Imperial College London · [LinkedIn](https://www.linkedin.com/in/mustafaosuleman/)
+<sub>Built by <b>Mustafa Suleman</b>, MEng Design Engineering, Imperial College London · <a href="https://github.com/Mustafa-OS">More projects</a> · <a href="https://www.linkedin.com/in/mustafaosuleman/">LinkedIn</a></sub>
