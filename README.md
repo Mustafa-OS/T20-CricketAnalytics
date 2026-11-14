@@ -1,27 +1,22 @@
-# 🏏 The T20 Analyst
+# The T20 Analyst
 
-**Cricket analytics for every major T20 league, built around a new metric that rates every ball by how much it actually mattered.**
+Ball-by-ball stats for 13 T20 competitions, built around CAIS, a score I designed that rates each ball by how much it mattered to the match.
 
-**[▶ Open the live site](https://mustafa-os.github.io/T20-CricketAnalytics/)** · Python · pandas · Flask · Plotly · GitHub Actions
+**[Open the live site](https://mustafa-os.github.io/T20-CricketAnalytics/)** · Python · pandas · Flask · Plotly · GitHub Actions
 
 ![The T20 Analyst home page: competition picker covering 13 T20 leagues and international events](docs/img/home.png)
 
-## At a glance
+It covers more than 6,300 matches and about 1.8 million balls from the IPL, PSL, Big Bash, The Hundred, the T20 World Cups and others. Every night a GitHub Actions job pulls in new matches and rebuilds the site, and it won't publish if any leaderboard drifts from the official records (IPL Orange and Purple Caps, PSL leaders, World Cup top scorers). The public site is just static JSON on GitHub Pages, so there's no server to run and each view loads in under 50 ms.
 
-- 📊 **13 competitions, 6,300+ matches, ~1.8 million balls**: IPL, PSL, Big Bash, The Hundred, T20 World Cups and more.
-- 🧮 **CAIS, my own metric.** It scores every ball by match situation (phase, pressure, opponent, knockout stage), so a last-over six against a top bowler isn't worth the same as a single in a dead game.
-- 🔁 **Updates itself every night.** A GitHub Actions pipeline downloads new matches, rebuilds the site, and **refuses to publish if the numbers drift** from official records (IPL Orange/Purple Caps, PSL leaders, World Cup top scorers).
-- ⚡ **Fast and free to host.** The public site is static JSON on GitHub Pages: no server, under 50 ms per view.
+## Why CAIS
 
-## The idea
-
-Normal batting and bowling tables ignore **context**, which is what matters most in T20:
+Normal batting and bowling tables ignore context, which in T20 is a big problem:
 
 - A strike rate of 140 is average in the first six overs and elite at the death.
 - 30 runs off a bowler is cheap in the 18th over and expensive in the middle overs.
 - Four wickets against India at a World Cup is not the same as four against Namibia.
 
-The T20 Analyst attaches context to every ball before adding anything up, so leaderboards show **quality, not just volume**. The scoring sliders are live, so you can switch any factor off or double it and watch the rankings change.
+CAIS adjusts every ball for the phase of the innings, the pressure, the opposition and the stage of the tournament before adding anything up, so the leaderboards reward quality and not just volume. The weights are sliders on the site, so you can turn any factor off or double it and see how the rankings move.
 
 ![CAIS view for the T20 World Cups: leaderboard, season and team filters, and the scoring-control sliders](docs/img/cais-leaderboard.png)
 
@@ -29,7 +24,7 @@ The T20 Analyst attaches context to every ball before adding anything up, so lea
 
 Pick a competition, then:
 
-1. **CAIS:** batting and bowling leaderboards using the context-adjusted score, with live sliders to tune the weights. This is the flagship view.
+1. **CAIS:** batting and bowling leaderboards using the context-adjusted score, with live sliders to tune the weights. This is the main view.
 2. **Batting:** runs, average, strike rate, with an average-vs-strike-rate bubble chart.
 3. **Bowling:** wickets and economy, with a wickets-vs-economy scatter.
 4. **Records:** highest scores, centuries, team win rates, how batters get out.
@@ -69,15 +64,15 @@ first-tier opposition, not tier-6 warm-up fixtures.
 
     CAIS = Σ (wicket value − run cost) / overs
 
-A powerplay wicket that breaks a 60-run stand against an elite batter in a tense chase can score **5–6× more** than dismissing a tailender in a dead middle over. That's the whole point.
+A powerplay wicket that breaks a 60-run stand against an elite batter in a tense chase can score 5–6× more than getting a tailender out in a dead middle over.
 
 <details>
 <summary><b>Full weights and design choices</b></summary>
 
-![CAIS view for the T20 World Cups — leaderboard, season and team filters, and the scoring-control sliders](docs/img/cais-leaderboard.png)
+![CAIS view for the T20 World Cups: leaderboard, season and team filters, and the scoring-control sliders](docs/img/cais-leaderboard.png)
 
-Every legal delivery is re-priced before it lands on the scorecard. The weights
-live in `CricketAnalyser.py` (see `_build_enriched`); the gist:
+Every legal delivery is re-weighted before it goes into the totals. The weights
+live in `CricketAnalyser.py` (see `_build_enriched`). In short:
 
 ### Batting
 
@@ -91,9 +86,9 @@ live in `CricketAnalyser.py` (see `_build_enriched`); the gist:
 | opponent      | WC only: 1.20 associate-vs-Test, 0.85 Test-vs-associate |
 | form          | rolling-5 innings ratio vs the field mean, clipped 1.0–1.45 |
 
-The phase weight is **flipped** on purpose — strike rate in the powerplay is
-inflated by fielding restrictions, death bowlers aim at your toes. A 20-ball
-30 at the death is genuinely harder than a 20-ball 30 in the first six.
+The phase weight is flipped on purpose. Strike rates in the powerplay are
+inflated by fielding restrictions, while at the death bowlers are aiming at your
+toes, so a 20-ball 30 at the death is harder than a 20-ball 30 in the first six.
 
 ### Bowling
 
@@ -116,7 +111,7 @@ inflated by fielding restrictions, death bowlers aim at your toes. A 20-ball
 
 A pace powerplay wicket that breaks a 60-run stand against an elite batter in
 a high-RRR chase can score **5–6× more** than a tailender in a dead middle
-over. That's the whole point.
+over.
 
 ### Stage multiplier
 
@@ -125,8 +120,8 @@ so the stage is inferred from match dates: within each (competition, season)
 the latest match is the Final (1.30), the 1–3 matches within 7 days of it are
 the Semis / Qualifiers (1.20), and the 4–5 matches within 10 days are
 Quarters / Eliminators (1.10). Everything else is group stage (1.00).
-Bilateral T20Is are excluded from the stage ladder — the last match of a
-calendar year is not a "final" in any meaningful sense.
+Bilateral T20Is are left out of the stage ladder, since the last match of a
+calendar year isn't a final.
 
 ### Opponent-quality multiplier
 
@@ -139,7 +134,7 @@ Test nations for apples-to-apples comparisons.
 
 ### Scoring controls
 
-The CAIS page exposes the phase weights and context bonuses as live sliders —
+The CAIS page shows the phase weights and context bonuses as live sliders:
 set a bonus to 0% to switch that factor off, 200% to double it, and the
 leaderboard re-ranks client-side without recomputing anything server-side.
 
@@ -164,10 +159,10 @@ Cricsheet data ──ingest.py──▶ CSVs ──CricketAnalyser.py──▶ e
 
 ### Two delivery modes, one page
 
-- **Static GitHub Pages** (the public deployment) — precomputed
+- **Static GitHub Pages** (the public deployment): precomputed
   per-competition JSON under `static/data/`, served as plain files. No
   backend, no pandas, sub-100 ms competition switching.
-- **Flask dev server** (local) — dynamic, reads the full ball-by-ball frame,
+- **Flask dev server** (local): dynamic, reads the full ball-by-ball frame,
   recomputes on demand.
 
 The same `index.html` handles both: it hits `/api/...` first when running
@@ -201,24 +196,23 @@ under Flask and falls back to `static/data/<comp>/<file>.json` otherwise.
 Two GitHub Actions workflows keep the public site current without manual
 intervention:
 
-- **Nightly refresh** (`refresh.yml`) — re-ingests every Cricsheet zip,
+- **Nightly refresh** (`refresh.yml`): re-ingests every Cricsheet zip,
   rebuilds the static JSON bundle, runs the audit gate, and commits the
   result (`chore(data): nightly refresh`).
-- **Pages deploy** (`pages.yml`) — republishes the static site whenever
+- **Pages deploy** (`pages.yml`): republishes the static site whenever
   `index.html` or `static/**` changes on `main`.
 
 ### Performance
 
-The first version was visibly sluggish across ~2 M rows — full CSV parse on
-every request, full `groupby` scan on every league switch. The current hot
-path:
+The first version was slow across ~2 M rows: a full CSV parse on every
+request and a full `groupby` scan on every league switch. What it does now:
 
-1. **Parquet sidecar cache** — `read_parquet` is ~5× faster than `read_csv`
+1. **Parquet sidecar cache**: `read_parquet` is ~5× faster than `read_csv`
    on this dataset. Built on first boot, reused every run after.
-2. **Per-competition memoisation** — enrichment, batter tiers, form scores
+2. **Per-competition memoisation**: enrichment, batter tiers, form scores
    and bowler roles are each cached per competition, so switching leagues
    slices ~70k–300k rows once and reuses everything after.
-3. **Static mode** — every public view reads a 10–200 KB JSON. No server, no
+3. **Static mode**: every public view reads a 10–200 KB JSON. No server, no
    pandas, no runtime cost.
 
 Measured on an M2 laptop with a warm parquet cache: app boot ~2.8 s, first
@@ -229,16 +223,16 @@ JSON fetch <50 ms.
 
 - **`match_id` collision guard.** WC matches also appear inside the raw T20I
   frame under the same `match_id`, so the stage-multiplier map is keyed on
-  `(competition, match_id)` — knockout bumps from the World Cup can't leak
-  into a bilateral view.
+  `(competition, match_id)`. That way knockout bumps from the World Cup can't
+  leak into a bilateral view.
 - **Every aggregated row carries a balls-weighted `team` field**, which powers
   the client-side team chip and the WC Pool filter without an extra
   round-trip.
 - **Multi-season merge.** Selecting several seasons fetches each season's JSON
   and combines them per player with an endpoint-specific merger
-  (balls-weighted CAIS, additive runs/wickets, weighted SR/economy) — a
+  (balls-weighted CAIS, additive runs/wickets, weighted SR/economy), so a
   player who appears in three seasons shows once, aggregated.
-- **Accuracy audited, not assumed.** The nightly pipeline refuses to publish
+- **The numbers are audited.** The nightly pipeline refuses to publish
   if computed leaderboards drift from published reference values.
 
 ### Project layout
@@ -259,8 +253,8 @@ JSON fetch <50 ms.
 
 ## Run it locally
 
-The zero-setup option is the [live site](https://mustafa-os.github.io/T20-CricketAnalytics/).
-To run locally:
+The easiest way to look around is the [live site](https://mustafa-os.github.io/T20-CricketAnalytics/).
+To run it yourself:
 
 ```bash
 pip install -r requirements.txt   # pandas, numpy, flask
@@ -287,7 +281,7 @@ python precompute.py ipl psl wc   # just the named ones
 
 ## About
 
-Personal project, built from April 2026 and still running nightly. It started as a PSL-only dashboard and grew into a multi-competition platform with its own metric, static-site compiler and automated data pipeline. All ball-by-ball data is from [Cricsheet](https://cricsheet.org/). CAIS, the pipeline, the UI and all analysis code are my own.
+Personal project, built from April 2026 and still running nightly. It started as a PSL-only dashboard and grew from there into 13 competitions, its own metric, a static-site build and a nightly data pipeline. All ball-by-ball data is from [Cricsheet](https://cricsheet.org/). CAIS, the pipeline, the UI and all analysis code are my own.
 
 Code is MIT-licensed (see [LICENSE](LICENSE)); the data stays subject to [Cricsheet's terms](https://cricsheet.org/register/).
 
